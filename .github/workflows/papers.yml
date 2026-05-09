@@ -69,49 +69,89 @@ jobs:
                           return f"[AI error after 3 attempts: {str(e)}]"
                       time.sleep(5)
 
-          def fetch_arxiv(category_url, count=6):
-              """Fetch papers from arXiv RSS. Returns list of dicts."""
+          def fetch_arxiv_api(category, count=6):
+              """
+              Uses arXiv search API — works every day including weekends.
+              Searches by category, sorted by most recent submission date.
+              """
               papers = []
               try:
-                  feed = feedparser.parse(category_url)
-                  for entry in feed.entries[:count]:
-                      title    = entry.get("title", "").replace("\n", " ").strip()
-                      abstract = entry.get("summary", entry.get("description", "")).strip()
-                      link     = entry.get("link", "")
-                      authors  = ""
-                      if hasattr(entry, "authors"):
-                          authors = ", ".join([a.get("name","") for a in entry.authors[:3]])
-                          if len(entry.authors) > 3:
-                              authors += " et al."
-                      papers.append({
-                          "title":    title,
-                          "abstract": abstract[:800],   # keep abstracts trimmed but meaningful
-                          "link":     link,
-                          "authors":  authors
-                      })
+                  url = (
+                      f"https://export.arxiv.org/api/query?"
+                      f"search_query=cat:{category}"
+                      f"&sortBy=submittedDate&sortOrder=descending"
+                      f"&max_results={count}"
+                  )
+                  resp = requests.get(url, timeout=30, headers={"User-Agent": "HermesBot/1.0"})
+                  
+                  # arXiv API returns XML — parse it manually (no extra library needed)
+                  content = resp.text
+                  
+                  # Extract entries using simple string splitting
+                  entries = content.split("<entry>")[1:]  # first split is header
+                  
+                  for entry in entries[:count]:
+                      # Title
+                      title = ""
+                      if "<title>" in entry:
+                          title = entry.split("<title>")[1].split("</title>")[0].strip().replace("\n", " ")
+                      
+                      # Abstract
+                      abstract = ""
+                      if "<summary>" in entry:
+                          abstract = entry.split("<summary>")[1].split("</summary>")[0].strip().replace("\n", " ")
+                      
+                      # Link
+                      link = ""
+                      if "<id>" in entry:
+                          link = entry.split("<id>")[1].split("</id>")[0].strip()
+                      
+                      # Authors
+                      author_list = []
+                      for chunk in entry.split("<author>")[1:]:
+                          if "<name>" in chunk:
+                              name = chunk.split("<name>")[1].split("</name>")[0].strip()
+                              author_list.append(name)
+                      authors = ", ".join(author_list[:3])
+                      if len(author_list) > 3:
+                          authors += " et al."
+                      
+                      if title:
+                          papers.append({
+                              "title":    title,
+                              "abstract": abstract[:800],
+                              "link":     link,
+                              "authors":  authors
+                          })
               except Exception as e:
-                  print(f"RSS fetch error for {category_url}: {e}")
+                  print(f"arXiv API error for {category}: {e}")
               return papers
 
-          # ── Fetch papers from 5 arXiv categories ─────────────────────────
+          # ── Fetch papers from 5 arXiv categories via API ──────────────────
+          # Works every day including weekends
 
           categories = {
-              "AI (cs.AI)":                   "https://arxiv.org/rss/cs.AI",
-              "Machine Learning (cs.LG)":     "https://arxiv.org/rss/cs.LG",
-              "NLP (cs.CL)":                  "https://arxiv.org/rss/cs.CL",
-              "Computer Vision (cs.CV)":      "https://arxiv.org/rss/cs.CV",
-              "Robotics (cs.RO)":             "https://arxiv.org/rss/cs.RO",
+              "AI (cs.AI)":                   "cs.AI",
+              "Machine Learning (cs.LG)":     "cs.LG",
+              "NLP (cs.CL)":                  "cs.CL",
+              "Computer Vision (cs.CV)":      "cs.CV",
+              "Robotics (cs.RO)":             "cs.RO",
           }
 
           all_papers = []
-          for cat_name, url in categories.items():
-              fetched = fetch_arxiv(url, count=5)
+          for cat_name, cat_code in categories.items():
+              fetched = fetch_arxiv_api(cat_code, count=5)
               for p in fetched:
                   p["category"] = cat_name
               all_papers.extend(fetched)
-              time.sleep(1)
+              print(f"  {cat_name}: {len(fetched)} papers")
+              time.sleep(2)  # be polite to arXiv servers
 
           print(f"Total papers fetched: {len(all_papers)}")
+
+          if len(all_papers) == 0:
+              send("⚠️ arXiv returned 0 papers today. This is unusual — will retry tomorrow automatically.")
+              exit()
 
           # ── Build the text block to send to AI ───────────────────────────
 
