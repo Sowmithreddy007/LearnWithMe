@@ -2,12 +2,13 @@ name: Hermes Research Papers 5AM
 
 on:
   schedule:
-    - cron: '30 23 * * *'   # 5:00 AM IST (IST = UTC+5:30, so 23:30 UTC previous day)
+    - cron: '30 23 * * *'   # 5:00 AM IST every day
   workflow_dispatch:
 
 jobs:
   research-papers:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Send Detailed Research Paper Summaries
@@ -20,7 +21,6 @@ jobs:
 
           python3 << 'EOF'
           import requests
-          import feedparser
           import os
           import time
           from datetime import datetime
@@ -29,22 +29,25 @@ jobs:
           CHAT_ID = os.environ["CHAT_ID"]
           OR_KEY = os.environ["OPENROUTER_KEY"]
 
-          # ── Helpers ──────────────────────────────────────────────────────
+          # ── Send to Telegram ──────────────────────────────────────────────
 
           def send(text):
-              """Send message, splitting if over 4000 chars."""
               chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
               for chunk in chunks:
-                  resp = requests.post(
-                      f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                      json={"chat_id": CHAT_ID, "text": chunk},
-                      timeout=15
-                  )
-                  time.sleep(1)  # avoid Telegram flood limits
+                  try:
+                      requests.post(
+                          f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+                          json={"chat_id": CHAT_ID, "text": chunk},
+                          timeout=15
+                      )
+                  except Exception as e:
+                      print(f"Telegram send error: {e}")
+                  time.sleep(1)
+
+          # ── Ask AI ────────────────────────────────────────────────────────
 
           def ask_ai(prompt, system="You are a precise and detailed AI research analyst."):
-              """Call OpenRouter and return the text response."""
-              for attempt in range(3):  # retry up to 3 times
+              for attempt in range(3):
                   try:
                       r = requests.post(
                           "https://openrouter.ai/api/v1/chat/completions",
@@ -53,7 +56,7 @@ jobs:
                               "Content-Type": "application/json"
                           },
                           json={
-                              "model": "nvidia/nemotron-3-super-120b-a12b:free",
+                              "model": "qwen/qwen3-coder-480b-a35b-instruct:free",
                               "messages": [
                                   {"role": "system", "content": system},
                                   {"role": "user",   "content": prompt}
@@ -63,17 +66,22 @@ jobs:
                           timeout=90
                       )
                       data = r.json()
-                      return data["choices"][0]["message"]["content"]
+                      if "choices" in data:
+                          return data["choices"][0]["message"]["content"]
+                      else:
+                          print(f"Unexpected API response: {data}")
+                          time.sleep(5)
                   except Exception as e:
+                      print(f"AI attempt {attempt+1} failed: {e}")
                       if attempt == 2:
-                          return f"[AI error after 3 attempts: {str(e)}]"
+                          return f"[AI unavailable after 3 attempts: {str(e)}]"
                       time.sleep(5)
 
-          def fetch_arxiv_api(category, count=6):
-              """
-              Uses arXiv search API — works every day including weekends.
-              Searches by category, sorted by most recent submission date.
-              """
+          # ── Fetch Papers from arXiv API ───────────────────────────────────
+          # Uses the official arXiv search API — works 7 days a week including weekends
+          # Does NOT use RSS (RSS is empty on weekends and blocks some IPs)
+
+          def fetch_arxiv_api(category, count=5):
               papers = []
               try:
                   url = (
@@ -82,31 +90,34 @@ jobs:
                       f"&sortBy=submittedDate&sortOrder=descending"
                       f"&max_results={count}"
                   )
-                  resp = requests.get(url, timeout=30, headers={"User-Agent": "HermesBot/1.0"})
-                  
-                  # arXiv API returns XML — parse it manually (no extra library needed)
+                  resp = requests.get(
+                      url,
+                      timeout=30,
+                      headers={"User-Agent": "HermesBot/1.0 (student research assistant)"}
+                  )
+
                   content = resp.text
-                  
-                  # Extract entries using simple string splitting
-                  entries = content.split("<entry>")[1:]  # first split is header
-                  
-                  for entry in entries[:count]:
+
+                  # Parse XML by splitting on entry tags (no extra library needed)
+                  raw_entries = content.split("<entry>")[1:]
+
+                  for entry in raw_entries[:count]:
                       # Title
                       title = ""
                       if "<title>" in entry:
                           title = entry.split("<title>")[1].split("</title>")[0].strip().replace("\n", " ")
-                      
+
                       # Abstract
                       abstract = ""
                       if "<summary>" in entry:
                           abstract = entry.split("<summary>")[1].split("</summary>")[0].strip().replace("\n", " ")
-                      
+
                       # Link
                       link = ""
                       if "<id>" in entry:
                           link = entry.split("<id>")[1].split("</id>")[0].strip()
-                      
-                      # Authors
+
+                      # Authors (first 3 only)
                       author_list = []
                       for chunk in entry.split("<author>")[1:]:
                           if "<name>" in chunk:
@@ -115,27 +126,34 @@ jobs:
                       authors = ", ".join(author_list[:3])
                       if len(author_list) > 3:
                           authors += " et al."
-                      
+
+                      # Published date
+                      published = ""
+                      if "<published>" in entry:
+                          published = entry.split("<published>")[1].split("</published>")[0].strip()[:10]
+
                       if title:
                           papers.append({
-                              "title":    title,
-                              "abstract": abstract[:800],
-                              "link":     link,
-                              "authors":  authors
+                              "title":     title,
+                              "abstract":  abstract[:800],
+                              "link":      link,
+                              "authors":   authors,
+                              "published": published
                           })
+
               except Exception as e:
                   print(f"arXiv API error for {category}: {e}")
+
               return papers
 
-          # ── Fetch papers from 5 arXiv categories via API ──────────────────
-          # Works every day including weekends
+          # ── Fetch from all 5 categories ───────────────────────────────────
 
           categories = {
-              "AI (cs.AI)":                   "cs.AI",
-              "Machine Learning (cs.LG)":     "cs.LG",
-              "NLP (cs.CL)":                  "cs.CL",
-              "Computer Vision (cs.CV)":      "cs.CV",
-              "Robotics (cs.RO)":             "cs.RO",
+              "AI (cs.AI)":               "cs.AI",
+              "Machine Learning (cs.LG)": "cs.LG",
+              "NLP (cs.CL)":              "cs.CL",
+              "Computer Vision (cs.CV)":  "cs.CV",
+              "Robotics (cs.RO)":         "cs.RO",
           }
 
           all_papers = []
@@ -144,113 +162,156 @@ jobs:
               for p in fetched:
                   p["category"] = cat_name
               all_papers.extend(fetched)
-              print(f"  {cat_name}: {len(fetched)} papers")
-              time.sleep(2)  # be polite to arXiv servers
+              print(f"  {cat_name}: {len(fetched)} papers fetched")
+              time.sleep(2)
 
-          print(f"Total papers fetched: {len(all_papers)}")
+          print(f"\nTotal papers fetched: {len(all_papers)}")
+
+          # ── Safety check ──────────────────────────────────────────────────
 
           if len(all_papers) == 0:
-              send("⚠️ arXiv returned 0 papers today. This is unusual — will retry tomorrow automatically.")
+              send(
+                  "⚠️ Hermes Research Brief — arXiv returned 0 papers today.\n\n"
+                  "This can happen if arXiv servers are down.\n"
+                  "Will retry automatically tomorrow at 5 AM."
+              )
               exit()
 
-          # ── Build the text block to send to AI ───────────────────────────
-
-          papers_text = ""
-          for i, p in enumerate(all_papers):
-              papers_text += (
-                  f"\n[PAPER {i+1}] Category: {p['category']}\n"
-                  f"Title: {p['title']}\n"
-                  f"Authors: {p['authors']}\n"
-                  f"Abstract: {p['abstract']}\n"
-                  f"Link: {p['link']}\n"
-                  f"{'─'*40}\n"
-              )
-
-          # Trim to avoid token overflow — keep first 6000 chars
-          papers_text = papers_text[:6000]
-
-          # ── Step 1: Let AI pick the top 5 most impactful papers ──────────
-
-          selection_prompt = f"""
-          You are an expert AI/ML researcher. Below is a list of today's arXiv papers.
-
-          Read through all of them. Select the TOP 5 that are:
-          1. Most novel or surprising
-          2. Most likely to have real-world impact
-          3. Most relevant to students learning AI/ML in 2025
-
-          Return ONLY their titles as a numbered list (1-5). Nothing else.
-
-          PAPERS:
-          {papers_text}
-          """
-
-          top_5_titles = ask_ai(selection_prompt)
-          print("Top 5 selected:\n", top_5_titles)
-
-          # ── Step 2: Get detailed summary for each selected paper ──────────
-
           today = datetime.now().strftime("%d %B %Y")
+
+          # ── Opening message ───────────────────────────────────────────────
+
           send(
               f"🌄 5:00 AM Research Brief — {today}\n\n"
-              f"📚 Fetched {len(all_papers)} papers from arXiv across AI, ML, NLP, CV, and Robotics.\n"
-              f"🔍 Detailed summaries of today's top 5 below...\n\n"
-              f"(Reading arXiv so you don't have to ☕)"
+              f"📚 Fetched {len(all_papers)} papers from arXiv\n"
+              f"   across AI, ML, NLP, Computer Vision & Robotics.\n\n"
+              f"🔍 Picking the top 5 most impactful papers...\n"
+              f"Detailed breakdowns below ☕\n"
+              f"{'─'*30}"
           )
 
-          # For each top paper, find it in our list and summarize it in detail
+          # ── Step 1: Let AI pick the top 5 most impactful papers ───────────
+
+          papers_list_text = ""
+          for i, p in enumerate(all_papers):
+              papers_list_text += (
+                  f"\n[{i+1}] Category: {p['category']}\n"
+                  f"Title: {p['title']}\n"
+                  f"Authors: {p['authors']}\n"
+                  f"Date: {p['published']}\n"
+                  f"Abstract: {p['abstract'][:300]}\n"
+                  f"{'─'*30}\n"
+              )
+
+          selection_prompt = f"""
+          You are an expert AI/ML researcher reviewing today's arXiv papers.
+
+          From the list below, select the TOP 5 papers that are:
+          1. Most novel or surprising — doing something genuinely new
+          2. Most likely to have real-world impact
+          3. Most valuable for a student learning AI/ML to know about
+
+          Return ONLY a numbered list of their exact titles, nothing else. Example:
+          1. Exact Paper Title Here
+          2. Another Exact Paper Title
+          3. ...
+
+          PAPERS:
+          {papers_list_text[:5000]}
+          """
+
+          top_5_raw = ask_ai(selection_prompt)
+          print(f"\nTop 5 selected by AI:\n{top_5_raw}\n")
+
+          # ── Step 2: Detailed summary for each selected paper ──────────────
+
+          summaries_sent = 0
+
           for i, paper in enumerate(all_papers):
-              # Check if this paper's title appears in the AI's top 5 selection
-              if paper["title"][:40].lower() not in top_5_titles.lower():
+              # Check if this paper was selected by the AI
+              title_fragment = paper["title"][:50].lower()
+              if title_fragment not in top_5_raw.lower():
                   continue
 
-              detail_prompt = f"""
-          You are explaining a research paper to a smart student who knows Python and ML basics but hasn't read this paper.
+              if summaries_sent >= 5:
+                  break
 
-          Write a DETAILED, STRUCTURED summary of this paper. Be thorough — this is meant to replace actually reading the paper.
+              summaries_sent += 1
+
+              detail_prompt = f"""
+          You are explaining a research paper to a smart student who knows Python and ML basics.
+          Write a DETAILED, THOROUGH summary. This summary should fully replace reading the paper.
 
           Paper Title: {paper['title']}
           Authors: {paper['authors']}
+          Published: {paper['published']}
           Category: {paper['category']}
           Abstract: {paper['abstract']}
 
-          Write your summary in EXACTLY this format:
+          Write your summary in EXACTLY this format — do not skip any section:
 
-          🔬 PAPER {i+1}: {paper['title']}
-          👥 Authors: {paper['authors']}
-          🏷️ Category: {paper['category']}
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          📄 PAPER {summaries_sent} of 5
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+          📌 {paper['title']}
+          👥 {paper['authors']}
+          🏷️ {paper['category']} | 📅 {paper['published']}
 
           🎯 THE PROBLEM
-          [2-3 sentences: What specific problem does this paper tackle? Why is it hard? What gap in knowledge does it fill?]
+          [3 sentences: What specific problem does this paper tackle?
+          Why is it hard or unsolved? What gap does it fill in current research?]
 
-          🛠️ HOW THEY SOLVED IT (Methodology)
-          [3-4 sentences: What is their approach, technique, or architecture? What is new or clever about it compared to existing methods? Explain in plain English — avoid unexplained jargon.]
+          🛠️ THEIR APPROACH
+          [4 sentences: What is their method, technique, or architecture?
+          What makes it different from existing approaches?
+          Explain the core idea in plain English — no unexplained jargon.
+          If they use a novel architecture or training trick, explain it simply.]
 
-          📊 KEY RESULTS
-          [2-3 sentences: What did they achieve? Include specific numbers, benchmarks, or comparisons if mentioned in the abstract. How much better is their method?]
+          📊 RESULTS & NUMBERS
+          [3 sentences: What did they achieve?
+          Include specific benchmark numbers, accuracy improvements, speed gains.
+          How does it compare to the previous best method?]
 
           🌍 REAL-WORLD IMPACT
-          [2-3 sentences: Where can this be used in the real world? Who benefits — researchers, companies, end users? What future work does this enable?]
+          [3 sentences: Where can this actually be used?
+          Who benefits — researchers, companies, everyday users?
+          What does this make possible that wasn't possible before?]
 
-          🎓 STUDENT TAKEAWAY
-          [1-2 sentences: What concept or idea from this paper is worth learning about? Any related topic you should read up on?]
+          🎓 WHAT YOU SHOULD LEARN FROM THIS
+          [2 sentences: What concept or technique from this paper is worth studying?
+          Name a specific topic, algorithm, or tool you should look up to understand this better.]
 
-          🔗 Read full paper: {paper['link']}
-          {'═'*40}
+          🔗 Full paper: {paper['link']}
           """
 
               summary = ask_ai(detail_prompt)
               send(summary)
-              time.sleep(3)  # pause between papers so Telegram doesn't flood
+              print(f"  Sent summary {summaries_sent}/5")
+              time.sleep(3)
 
-          # ── Final message ─────────────────────────────────────────────────
+          # ── If AI selection missed papers (safety fallback) ───────────────
+
+          if summaries_sent == 0:
+              send("⚠️ AI paper selection returned no matches. Sending top 3 papers directly...")
+              for paper in all_papers[:3]:
+                  send(
+                      f"📄 {paper['title']}\n"
+                      f"👥 {paper['authors']}\n"
+                      f"🏷️ {paper['category']}\n\n"
+                      f"{paper['abstract']}\n\n"
+                      f"🔗 {paper['link']}"
+                  )
+                  time.sleep(2)
+
+          # ── Closing message ───────────────────────────────────────────────
 
           send(
-              "✅ That's your research brief for today!\n\n"
-              "📌 Tip: Pick ONE paper that interests you most and skim the full PDF.\n"
-              "💬 Ask your Hermes study bot to explain any concept from these papers anytime.\n\n"
-              "See you at 7 AM for the AI/ML + Java news brief! 🚀"
+              f"✅ Research brief complete! ({summaries_sent} papers)\n\n"
+              f"📌 Pick ONE paper that interests you and skim the full PDF.\n"
+              f"💬 Message your Hermes bot to explain any concept from these papers.\n\n"
+              f"See you at 7 AM for AI/ML + Java news! 🚀"
           )
 
-          print("✅ Research papers brief sent successfully!")
+          print(f"\n✅ Done! Sent {summaries_sent} paper summaries.")
           EOF
