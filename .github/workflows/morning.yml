@@ -1,0 +1,236 @@
+name: Hermes Morning Brief 7AM
+
+on:
+  schedule:
+    - cron: '30 1 * * *'   # 7:00 AM IST (1:30 AM UTC)
+  workflow_dispatch:
+
+jobs:
+  morning-brief:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send AI/ML + Java Morning Brief
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          OPENROUTER_KEY: ${{ secrets.OPENROUTER_KEY }}
+        run: |
+          pip install requests feedparser -q
+
+          python3 << 'EOF'
+          import requests
+          import feedparser
+          import os
+          import time
+          from datetime import datetime
+
+          TOKEN = os.environ["TELEGRAM_TOKEN"]
+          CHAT_ID = os.environ["CHAT_ID"]
+          OR_KEY = os.environ["OPENROUTER_KEY"]
+
+          # ── Helpers ──────────────────────────────────────────────────────
+
+          def send(text):
+              chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
+              for chunk in chunks:
+                  requests.post(
+                      f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+                      json={"chat_id": CHAT_ID, "text": chunk},
+                      timeout=15
+                  )
+                  time.sleep(1)
+
+          def ask_ai(prompt, system="You are a sharp, concise AI/tech news analyst."):
+              for attempt in range(3):
+                  try:
+                      r = requests.post(
+                          "https://openrouter.ai/api/v1/chat/completions",
+                          headers={
+                              "Authorization": f"Bearer {OR_KEY}",
+                              "Content-Type": "application/json"
+                          },
+                          json={
+                              "model": "nvidia/nemotron-3-super-120b-a12b:free",
+                              "messages": [
+                                  {"role": "system", "content": system},
+                                  {"role": "user",   "content": prompt}
+                              ],
+                              "max_tokens": 1500
+                          },
+                          timeout=90
+                      )
+                      return r.json()["choices"][0]["message"]["content"]
+                  except Exception as e:
+                      if attempt == 2:
+                          return f"[Error: {str(e)}]"
+                      time.sleep(5)
+
+          def fetch_rss(url, count=5):
+              items = []
+              try:
+                  feed = feedparser.parse(url)
+                  for entry in feed.entries[:count]:
+                      title   = entry.get("title", "").strip()
+                      summary = entry.get("summary", entry.get("description", ""))[:300].strip()
+                      link    = entry.get("link", "")
+                      items.append(f"• {title}\n  {summary}\n  {link}")
+              except Exception as e:
+                  print(f"RSS error {url}: {e}")
+              return "\n".join(items)
+
+          today = datetime.now().strftime("%d %B %Y")
+
+          # ── GREETING ─────────────────────────────────────────────────────
+
+          send(
+              f"☀️ Good Morning! — {today}\n\n"
+              f"🤖 Hermes 7 AM Brief\n"
+              f"3 updates incoming:\n"
+              f"1️⃣ AI & ML News\n"
+              f"2️⃣ Java in AI/ML\n"
+              f"3️⃣ Community Buzz + Coding Challenge\n\n"
+              f"Let's go! ⚡"
+          )
+
+          # ── SECTION 1: AI & ML NEWS ───────────────────────────────────────
+
+          aiml_sources = {
+              "TechCrunch AI":    "https://techcrunch.com/category/artificial-intelligence/feed/",
+              "VentureBeat AI":   "https://venturebeat.com/category/ai/feed/",
+              "MIT Tech Review":  "https://www.technologyreview.com/feed/",
+              "The Verge AI":     "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
+              "Ars Technica":     "https://feeds.arstechnica.com/arstechnica/index",
+              "Hugging Face Blog":"https://huggingface.co/blog/feed.xml",
+          }
+
+          aiml_raw = ""
+          for name, url in aiml_sources.items():
+              chunk = fetch_rss(url, count=4)
+              if chunk:
+                  aiml_raw += f"\n[{name}]\n{chunk}\n"
+              time.sleep(0.5)
+
+          aiml_summary = ask_ai(
+              f"""Summarize today's AI & ML news for a student who codes and follows the field closely.
+
+              From the articles below, pick the 6 most important stories.
+              For each story write:
+              🔹 [Headline] — [2 sentence summary explaining what happened and why it matters]
+
+              Focus on: new model releases, benchmark records, company announcements, research breakthroughs, AI policy/regulation.
+              Be specific — mention model names, company names, numbers where available.
+
+              Articles:
+              {aiml_raw[:4000]}"""
+          )
+
+          send(f"🤖 AI & ML NEWS\n{'─'*35}\n\n{aiml_summary}")
+          time.sleep(2)
+
+          # ── SECTION 2: JAVA IN AI/ML ──────────────────────────────────────
+
+          java_sources = {
+              "InfoQ Java":       "https://feed.infoq.com/java",
+              "InfoQ AI/ML":      "https://feed.infoq.com/ai-ml-data-eng",
+              "Baeldung":         "https://www.baeldung.com/feed/",
+              "DZone Java":       "https://feeds.dzone.com/java",
+              "Oracle Java Blog": "https://blogs.oracle.com/java/rss",
+              "Inside Java":      "https://inside.java/feed.xml",
+          }
+
+          java_raw = ""
+          for name, url in java_sources.items():
+              chunk = fetch_rss(url, count=4)
+              if chunk:
+                  java_raw += f"\n[{name}]\n{chunk}\n"
+              time.sleep(0.5)
+
+          java_summary = ask_ai(
+              f"""Summarize the latest Java news specifically related to AI, ML, data science, and modern development.
+
+              From the articles below, pick the 5 most relevant updates for a Java developer interested in AI/ML.
+              For each update write:
+              ☕ [Topic/Library/Feature] — [2 sentence explanation of what it is and why a Java developer should care]
+
+              Focus on: Java AI libraries (Deeplearning4j, DJL, Weka, Tribuo, LangChain4j), 
+              JVM performance for ML, Java LLM integrations, new Java features relevant to data/AI,
+              Spring AI, Quarkus AI integrations.
+              
+              If an article isn't Java+AI related, skip it.
+
+              Articles:
+              {java_raw[:4000]}"""
+          )
+
+          send(f"☕ JAVA IN AI & ML\n{'─'*35}\n\n{java_summary}")
+          time.sleep(2)
+
+          # ── SECTION 3: COMMUNITY BUZZ ─────────────────────────────────────
+
+          reddit_sources = {
+              "r/MachineLearning": "https://www.reddit.com/r/MachineLearning/.rss",
+              "r/LocalLLaMA":      "https://www.reddit.com/r/LocalLLaMA/.rss",
+              "r/artificial":      "https://www.reddit.com/r/artificial/.rss",
+              "r/java":            "https://www.reddit.com/r/java/.rss",
+              "r/learnmachinelearning": "https://www.reddit.com/r/learnmachinelearning/.rss",
+          }
+
+          reddit_raw = ""
+          for sub, url in reddit_sources.items():
+              chunk = fetch_rss(url, count=4)
+              if chunk:
+                  reddit_raw += f"\n[{sub}]\n{chunk}\n"
+              time.sleep(0.5)
+
+          buzz_summary = ask_ai(
+              f"""Summarize what the AI/ML/Java community is buzzing about on Reddit right now.
+
+              From these posts, pick 5 hot topics or discussions.
+              Write it like a "what's trending in AI Twitter" roundup — energetic and punchy.
+              Format:
+              🔥 [Topic] — [2 lines: what's being discussed and the general sentiment/reaction]
+
+              Posts:
+              {reddit_raw[:3500]}"""
+          )
+
+          send(f"🐦 COMMUNITY BUZZ\n{'─'*35}\n\n{buzz_summary}")
+          time.sleep(2)
+
+          # ── SECTION 4: DAILY CODING CHALLENGE ────────────────────────────
+
+          challenge = ask_ai(
+              f"""Generate 3 coding challenges for today — mix Java and Python.
+              Make them practical, connected to real AI/ML or backend work.
+
+              Format exactly like this:
+
+              🟢 EASY (Python)
+              Task: [challenge description]
+              Expected output: [show the output]
+
+              🟡 MEDIUM (Java)
+              Task: [challenge description]  
+              Expected output: [show the output]
+
+              🔴 HARD (Your choice — Python or Java)
+              Task: [challenge — something that teaches a real skill]
+              Hint: [one-line hint]
+              Expected output: [show the output]
+
+              Topics to draw from: data structures, REST APIs, file I/O, ML preprocessing, 
+              algorithmic thinking, OOP, concurrency, streams."""
+          )
+
+          send(
+              f"💻 DAILY CODING CHALLENGES\n{'─'*35}\n\n"
+              f"{challenge}\n\n"
+              f"{'─'*35}\n"
+              f"✅ That's your 7 AM brief!\n"
+              f"📚 Research papers already in your inbox from 5 AM.\n"
+              f"Have a productive day! 🚀"
+          )
+
+          print("✅ Morning brief sent!")
+          EOF
