@@ -1,0 +1,216 @@
+name: Hermes Research Papers 5AM
+
+on:
+  schedule:
+    - cron: '30 23 * * *'   # 5:00 AM IST (IST = UTC+5:30, so 23:30 UTC previous day)
+  workflow_dispatch:
+
+jobs:
+  research-papers:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send Detailed Research Paper Summaries
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          OPENROUTER_KEY: ${{ secrets.OPENROUTER_KEY }}
+        run: |
+          pip install requests feedparser -q
+
+          python3 << 'EOF'
+          import requests
+          import feedparser
+          import os
+          import time
+          from datetime import datetime
+
+          TOKEN = os.environ["TELEGRAM_TOKEN"]
+          CHAT_ID = os.environ["CHAT_ID"]
+          OR_KEY = os.environ["OPENROUTER_KEY"]
+
+          # ── Helpers ──────────────────────────────────────────────────────
+
+          def send(text):
+              """Send message, splitting if over 4000 chars."""
+              chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
+              for chunk in chunks:
+                  resp = requests.post(
+                      f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+                      json={"chat_id": CHAT_ID, "text": chunk},
+                      timeout=15
+                  )
+                  time.sleep(1)  # avoid Telegram flood limits
+
+          def ask_ai(prompt, system="You are a precise and detailed AI research analyst."):
+              """Call OpenRouter and return the text response."""
+              for attempt in range(3):  # retry up to 3 times
+                  try:
+                      r = requests.post(
+                          "https://openrouter.ai/api/v1/chat/completions",
+                          headers={
+                              "Authorization": f"Bearer {OR_KEY}",
+                              "Content-Type": "application/json"
+                          },
+                          json={
+                              "model": "nvidia/nemotron-3-super-120b-a12b:free",
+                              "messages": [
+                                  {"role": "system", "content": system},
+                                  {"role": "user",   "content": prompt}
+                              ],
+                              "max_tokens": 2000
+                          },
+                          timeout=90
+                      )
+                      data = r.json()
+                      return data["choices"][0]["message"]["content"]
+                  except Exception as e:
+                      if attempt == 2:
+                          return f"[AI error after 3 attempts: {str(e)}]"
+                      time.sleep(5)
+
+          def fetch_arxiv(category_url, count=6):
+              """Fetch papers from arXiv RSS. Returns list of dicts."""
+              papers = []
+              try:
+                  feed = feedparser.parse(category_url)
+                  for entry in feed.entries[:count]:
+                      title    = entry.get("title", "").replace("\n", " ").strip()
+                      abstract = entry.get("summary", entry.get("description", "")).strip()
+                      link     = entry.get("link", "")
+                      authors  = ""
+                      if hasattr(entry, "authors"):
+                          authors = ", ".join([a.get("name","") for a in entry.authors[:3]])
+                          if len(entry.authors) > 3:
+                              authors += " et al."
+                      papers.append({
+                          "title":    title,
+                          "abstract": abstract[:800],   # keep abstracts trimmed but meaningful
+                          "link":     link,
+                          "authors":  authors
+                      })
+              except Exception as e:
+                  print(f"RSS fetch error for {category_url}: {e}")
+              return papers
+
+          # ── Fetch papers from 5 arXiv categories ─────────────────────────
+
+          categories = {
+              "AI (cs.AI)":                   "https://arxiv.org/rss/cs.AI",
+              "Machine Learning (cs.LG)":     "https://arxiv.org/rss/cs.LG",
+              "NLP (cs.CL)":                  "https://arxiv.org/rss/cs.CL",
+              "Computer Vision (cs.CV)":      "https://arxiv.org/rss/cs.CV",
+              "Robotics (cs.RO)":             "https://arxiv.org/rss/cs.RO",
+          }
+
+          all_papers = []
+          for cat_name, url in categories.items():
+              fetched = fetch_arxiv(url, count=5)
+              for p in fetched:
+                  p["category"] = cat_name
+              all_papers.extend(fetched)
+              time.sleep(1)
+
+          print(f"Total papers fetched: {len(all_papers)}")
+
+          # ── Build the text block to send to AI ───────────────────────────
+
+          papers_text = ""
+          for i, p in enumerate(all_papers):
+              papers_text += (
+                  f"\n[PAPER {i+1}] Category: {p['category']}\n"
+                  f"Title: {p['title']}\n"
+                  f"Authors: {p['authors']}\n"
+                  f"Abstract: {p['abstract']}\n"
+                  f"Link: {p['link']}\n"
+                  f"{'─'*40}\n"
+              )
+
+          # Trim to avoid token overflow — keep first 6000 chars
+          papers_text = papers_text[:6000]
+
+          # ── Step 1: Let AI pick the top 5 most impactful papers ──────────
+
+          selection_prompt = f"""
+          You are an expert AI/ML researcher. Below is a list of today's arXiv papers.
+
+          Read through all of them. Select the TOP 5 that are:
+          1. Most novel or surprising
+          2. Most likely to have real-world impact
+          3. Most relevant to students learning AI/ML in 2025
+
+          Return ONLY their titles as a numbered list (1-5). Nothing else.
+
+          PAPERS:
+          {papers_text}
+          """
+
+          top_5_titles = ask_ai(selection_prompt)
+          print("Top 5 selected:\n", top_5_titles)
+
+          # ── Step 2: Get detailed summary for each selected paper ──────────
+
+          today = datetime.now().strftime("%d %B %Y")
+          send(
+              f"🌄 5:00 AM Research Brief — {today}\n\n"
+              f"📚 Fetched {len(all_papers)} papers from arXiv across AI, ML, NLP, CV, and Robotics.\n"
+              f"🔍 Detailed summaries of today's top 5 below...\n\n"
+              f"(Reading arXiv so you don't have to ☕)"
+          )
+
+          # For each top paper, find it in our list and summarize it in detail
+          for i, paper in enumerate(all_papers):
+              # Check if this paper's title appears in the AI's top 5 selection
+              if paper["title"][:40].lower() not in top_5_titles.lower():
+                  continue
+
+              detail_prompt = f"""
+          You are explaining a research paper to a smart student who knows Python and ML basics but hasn't read this paper.
+
+          Write a DETAILED, STRUCTURED summary of this paper. Be thorough — this is meant to replace actually reading the paper.
+
+          Paper Title: {paper['title']}
+          Authors: {paper['authors']}
+          Category: {paper['category']}
+          Abstract: {paper['abstract']}
+
+          Write your summary in EXACTLY this format:
+
+          🔬 PAPER {i+1}: {paper['title']}
+          👥 Authors: {paper['authors']}
+          🏷️ Category: {paper['category']}
+
+          🎯 THE PROBLEM
+          [2-3 sentences: What specific problem does this paper tackle? Why is it hard? What gap in knowledge does it fill?]
+
+          🛠️ HOW THEY SOLVED IT (Methodology)
+          [3-4 sentences: What is their approach, technique, or architecture? What is new or clever about it compared to existing methods? Explain in plain English — avoid unexplained jargon.]
+
+          📊 KEY RESULTS
+          [2-3 sentences: What did they achieve? Include specific numbers, benchmarks, or comparisons if mentioned in the abstract. How much better is their method?]
+
+          🌍 REAL-WORLD IMPACT
+          [2-3 sentences: Where can this be used in the real world? Who benefits — researchers, companies, end users? What future work does this enable?]
+
+          🎓 STUDENT TAKEAWAY
+          [1-2 sentences: What concept or idea from this paper is worth learning about? Any related topic you should read up on?]
+
+          🔗 Read full paper: {paper['link']}
+          {'═'*40}
+          """
+
+              summary = ask_ai(detail_prompt)
+              send(summary)
+              time.sleep(3)  # pause between papers so Telegram doesn't flood
+
+          # ── Final message ─────────────────────────────────────────────────
+
+          send(
+              "✅ That's your research brief for today!\n\n"
+              "📌 Tip: Pick ONE paper that interests you most and skim the full PDF.\n"
+              "💬 Ask your Hermes study bot to explain any concept from these papers anytime.\n\n"
+              "See you at 7 AM for the AI/ML + Java news brief! 🚀"
+          )
+
+          print("✅ Research papers brief sent successfully!")
+          EOF
