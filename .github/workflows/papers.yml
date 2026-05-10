@@ -14,6 +14,13 @@ jobs:
       - name: Install dependencies
         run: pip install requests -q
 
+      - name: Restore sent papers cache
+        uses: actions/cache@v3
+        with:
+          path: sent_papers.txt
+          key: sent-papers-cache
+          restore-keys: sent-papers-cache
+
       - name: Write Python script
         run: |
           cat > papers.py << 'PYEOF'
@@ -30,6 +37,25 @@ jobs:
               "google/gemma-3-27b-it:free",
           ]
 
+          # ── Sent papers tracker ───────────────────────────────────────────
+
+          SENT_FILE = "sent_papers.txt"
+
+          def load_sent():
+              if os.path.exists(SENT_FILE):
+                  with open(SENT_FILE, "r") as f:
+                      return set(line.strip() for line in f if line.strip())
+              return set()
+
+          def save_sent(ids):
+              existing = load_sent()
+              all_ids = existing | ids
+              trimmed = list(all_ids)[-200:]
+              with open(SENT_FILE, "w") as f:
+                  f.write("\n".join(trimmed))
+
+          # ── Telegram sender ───────────────────────────────────────────────
+
           def send(text):
               chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
               for chunk in chunks:
@@ -42,6 +68,8 @@ jobs:
                   except Exception as e:
                       print(f"Telegram error: {e}")
                   time.sleep(1)
+
+          # ── AI caller ─────────────────────────────────────────────────────
 
           def ask_ai(prompt, system="You are a precise and detailed AI research analyst."):
               for model in MODELS:
@@ -75,7 +103,9 @@ jobs:
                           time.sleep(3)
               return None
 
-          def fetch_arxiv(category, count=5):
+          # ── arXiv fetcher ─────────────────────────────────────────────────
+
+          def fetch_arxiv(category, count=8):
               papers = []
               try:
                   url = (
@@ -107,7 +137,7 @@ jobs:
                       published = ""
                       if "<published>" in entry:
                           published = entry.split("<published>")[1].split("</published>")[0].strip()[:10]
-                      if title:
+                      if title and link:
                           papers.append({
                               "title": title,
                               "abstract": abstract[:800],
@@ -119,6 +149,57 @@ jobs:
                   print(f"arXiv error for {category}: {e}")
               return papers
 
+          # ── Summarize a list of papers (reused for both weekday + weekend) ─
+
+          def summarize_papers(papers_to_summarize, label=""):
+              sent_today = set()
+              for idx, paper in enumerate(papers_to_summarize):
+                  num = idx + 1
+                  total = len(papers_to_summarize)
+                  detail_prompt = (
+                      f"Write a DETAILED summary of this research paper for a student who knows Python and ML basics.\n"
+                      f"This summary should fully replace reading the paper.\n\n"
+                      f"Paper: {paper['title']}\n"
+                      f"Authors: {paper['authors']}\n"
+                      f"Date: {paper['published']}\n"
+                      f"Category: {paper['category']}\n"
+                      f"Abstract: {paper['abstract']}\n\n"
+                      f"Use EXACTLY this structure:\n\n"
+                      f"PAPER {num} of {total}{label}\n"
+                      f"{paper['title']}\n"
+                      f"Authors: {paper['authors']}\n"
+                      f"Category: {paper['category']} | Date: {paper['published']}\n\n"
+                      f"THE PROBLEM\n"
+                      f"[3 sentences: what problem, why it is hard, what gap it fills]\n\n"
+                      f"THEIR APPROACH\n"
+                      f"[4 sentences: method in plain English, what is new vs existing work]\n\n"
+                      f"RESULTS AND NUMBERS\n"
+                      f"[3 sentences: specific benchmarks, accuracy numbers, comparison to previous best]\n\n"
+                      f"REAL-WORLD IMPACT\n"
+                      f"[3 sentences: real use cases, who benefits, what this enables]\n\n"
+                      f"WHAT TO LEARN FROM THIS\n"
+                      f"[2 sentences: specific concept worth studying, what to look up]\n\n"
+                      f"Full paper: {paper['link']}"
+                  )
+                  summary = ask_ai(detail_prompt)
+                  if summary:
+                      send(summary)
+                  else:
+                      send(
+                          f"PAPER {num} of {total}\n\n"
+                          f"{paper['title']}\n"
+                          f"Authors: {paper['authors']}\n"
+                          f"Category: {paper['category']} | {paper['published']}\n\n"
+                          f"{paper['abstract']}\n\n"
+                          f"Full paper: {paper['link']}"
+                      )
+                  sent_today.add(paper["link"])
+                  print(f"Sent paper {num}/{total}")
+                  time.sleep(3)
+              return sent_today
+
+          # ── Categories ────────────────────────────────────────────────────
+
           categories = {
               "AI (cs.AI)": "cs.AI",
               "Machine Learning (cs.LG)": "cs.LG",
@@ -127,33 +208,155 @@ jobs:
               "Robotics (cs.RO)": "cs.RO",
           }
 
+          # ── Fetch all papers ──────────────────────────────────────────────
+
+          today = datetime.now().strftime("%d %B %Y")
+          weekday = datetime.now().strftime("%A")
+
           all_papers = []
           for cat_name, cat_code in categories.items():
-              fetched = fetch_arxiv(cat_code, count=5)
+              fetched = fetch_arxiv(cat_code, count=8)
               for p in fetched:
                   p["category"] = cat_name
               all_papers.extend(fetched)
               print(f"{cat_name}: {len(fetched)} papers")
               time.sleep(2)
 
-          print(f"Total: {len(all_papers)} papers")
+          print(f"Total fetched: {len(all_papers)}")
 
-          if len(all_papers) == 0:
-              send("arXiv returned 0 papers today. Will retry tomorrow at 5 AM.")
+          # ── Filter already-sent papers ────────────────────────────────────
+
+          sent_ids = load_sent()
+          print(f"Already sent: {len(sent_ids)} papers")
+
+          new_papers = [p for p in all_papers if p["link"] not in sent_ids]
+          print(f"New unseen papers: {len(new_papers)}")
+
+          # ═════════════════════════════════════════════════════════════════
+          # WEEKEND PATH — full weekly digest
+          # ═════════════════════════════════════════════════════════════════
+
+          if weekday in ["Saturday", "Sunday"]:
+
+              send(
+                  f"5:00 AM Weekend Research Digest - {today} ({weekday})\n\n"
+                  f"arXiv is closed on weekends (no new submissions).\n"
+                  f"Instead, here is your FULL WEEK IN AI RESEARCH digest!\n\n"
+                  f"Fetching this week's papers across all categories..."
+              )
+
+              # Fetch more papers to cover the full week
+              weekly_papers = []
+              for cat_name, cat_code in categories.items():
+                  fetched = fetch_arxiv(cat_code, count=15)
+                  for p in fetched:
+                      p["category"] = cat_name
+                  weekly_papers.extend(fetched)
+                  time.sleep(2)
+
+              print(f"Weekly papers fetched: {len(weekly_papers)}")
+
+              if len(weekly_papers) == 0:
+                  send("Could not fetch weekly papers. arXiv may be down. Try again later.")
+                  exit()
+
+              # Build text block for AI
+              weekly_text = ""
+              for i, p in enumerate(weekly_papers):
+                  weekly_text += (
+                      f"[{i+1}] {p['category']} | {p['published']}\n"
+                      f"Title: {p['title']}\n"
+                      f"Abstract: {p['abstract'][:300]}\n"
+                      f"---\n"
+                  )
+
+              # ── Weekly overview ───────────────────────────────────────────
+
+              overview_prompt = (
+                  f"You are summarizing an entire week of AI/ML research for a student.\n\n"
+                  f"From these {len(weekly_papers)} papers published this week, write a "
+                  f"high-level WEEKLY OVERVIEW covering:\n\n"
+                  f"1. BIGGEST THEMES THIS WEEK\n"
+                  f"[What were the 3-4 major research directions everyone was working on? Be specific.]\n\n"
+                  f"2. MOST EXCITING BREAKTHROUGH\n"
+                  f"[One paper or result that stood out above everything else this week and exactly why]\n\n"
+                  f"3. TREND TO WATCH\n"
+                  f"[One emerging pattern or technique appearing across multiple papers this week]\n\n"
+                  f"4. BY CATEGORY\n"
+                  f"[One sentence each on what happened in: AI, ML, NLP, Computer Vision, Robotics]\n\n"
+                  f"Be specific. Mention actual paper titles and techniques where relevant.\n\n"
+                  f"PAPERS:\n{weekly_text[:5000]}"
+              )
+
+              overview = ask_ai(overview_prompt)
+              if overview:
+                  send(f"THIS WEEK IN AI RESEARCH\n{'='*35}\n\n{overview}")
+              time.sleep(3)
+
+              # ── Select top 5 of the week ──────────────────────────────────
+
+              selection_prompt = (
+                  f"From these arXiv papers published this week, select the TOP 5 most impactful ones.\n\n"
+                  f"Return ONLY a numbered list of their exact titles. Nothing else.\n"
+                  f"Example:\n1. Title One\n2. Title Two\n\n"
+                  f"PAPERS:\n{weekly_text[:5000]}"
+              )
+
+              top_5_raw = ask_ai(selection_prompt)
+              if not top_5_raw:
+                  top_5_raw = ""
+
+              papers_to_summarize = []
+              if top_5_raw:
+                  for paper in weekly_papers:
+                      if len(papers_to_summarize) >= 5:
+                          break
+                      if paper["title"][:45].lower() in top_5_raw.lower():
+                          papers_to_summarize.append(paper)
+
+              if len(papers_to_summarize) == 0:
+                  papers_to_summarize = weekly_papers[:5]
+
+              send(
+                  f"TOP 5 PAPERS OF THE WEEK\n{'='*35}\n\n"
+                  f"Detailed summaries incoming..."
+              )
+
+              summarize_papers(papers_to_summarize, label=" - WEEKLY BEST")
+
+              send(
+                  f"Weekend digest complete!\n\n"
+                  f"This week had {len(weekly_papers)} papers across all categories.\n"
+                  f"Pick the one that excited you most and read the full PDF.\n\n"
+                  f"Enjoy your weekend! New papers resume Monday at 5 AM."
+              )
+
               exit()
 
-          today = datetime.now().strftime("%d %B %Y")
+          # ═════════════════════════════════════════════════════════════════
+          # WEEKDAY PATH — today's fresh papers
+          # ═════════════════════════════════════════════════════════════════
+
+          if len(new_papers) == 0:
+              send(
+                  f"5:00 AM Research Brief - {today}\n\n"
+                  f"No new papers found today.\n"
+                  f"All recent arXiv papers were already sent earlier this week.\n"
+                  f"Check back tomorrow — new submissions arrive Monday-Friday."
+              )
+              exit()
 
           send(
-              f"5:00 AM Research Brief - {today}\n\n"
-              f"Fetched {len(all_papers)} papers from arXiv\n"
+              f"5:00 AM Research Brief - {today} ({weekday})\n\n"
+              f"Fetched {len(new_papers)} NEW papers from arXiv\n"
               f"(AI, ML, NLP, Computer Vision, Robotics)\n\n"
-              f"Selecting top 5 most impactful papers...\n"
-              f"Detailed breakdowns coming up!"
+              f"Selecting top 5 most impactful..."
           )
 
+          # ── AI selects top 5 ──────────────────────────────────────────────
+
           papers_list_text = ""
-          for i, p in enumerate(all_papers):
+          for i, p in enumerate(new_papers):
               papers_list_text += (
                   f"[{i+1}] {p['category']}\n"
                   f"Title: {p['title']}\n"
@@ -162,10 +365,10 @@ jobs:
               )
 
           selection_prompt = (
-              "From the arXiv papers below, select the TOP 5 that are most novel, impactful, "
-              "and valuable for a student learning AI/ML.\n\n"
-              "Return ONLY a numbered list of their exact titles. Nothing else.\n"
-              "Example:\n1. Title One\n2. Title Two\n\n"
+              f"From the arXiv papers below, select the TOP 5 that are most novel, impactful, "
+              f"and valuable for a student learning AI/ML.\n\n"
+              f"Return ONLY a numbered list of their exact titles. Nothing else.\n"
+              f"Example:\n1. Title One\n2. Title Two\n\n"
               f"PAPERS:\n{papers_list_text[:5000]}"
           )
 
@@ -173,79 +376,42 @@ jobs:
           top_5_raw = ask_ai(selection_prompt)
 
           if not top_5_raw:
-              send("AI model unavailable for selection. Sending top 5 papers directly.")
+              send("AI model unavailable for selection. Sending top 5 newest papers directly.")
               top_5_raw = ""
 
           print(f"Top 5 selected:\n{top_5_raw}")
 
-          summaries_sent = 0
+          # ── Pick papers ───────────────────────────────────────────────────
 
           papers_to_summarize = []
-
           if top_5_raw:
-              for paper in all_papers:
-                  if summaries_sent >= 5:
+              for paper in new_papers:
+                  if len(papers_to_summarize) >= 5:
                       break
                   if paper["title"][:45].lower() in top_5_raw.lower():
                       papers_to_summarize.append(paper)
-                      summaries_sent += 1
 
-          if summaries_sent == 0:
-              print("AI selection matched nothing - using top 5 directly")
-              papers_to_summarize = all_papers[:5]
-              summaries_sent = 5
+          if len(papers_to_summarize) == 0:
+              print("AI selection matched nothing - using top 5 newest")
+              papers_to_summarize = new_papers[:5]
 
-          for idx, paper in enumerate(papers_to_summarize):
-              num = idx + 1
-              detail_prompt = (
-                  f"Write a DETAILED summary of this research paper for a student who knows Python and ML basics.\n"
-                  f"This summary should fully replace reading the paper.\n\n"
-                  f"Paper: {paper['title']}\n"
-                  f"Authors: {paper['authors']}\n"
-                  f"Date: {paper['published']}\n"
-                  f"Category: {paper['category']}\n"
-                  f"Abstract: {paper['abstract']}\n\n"
-                  f"Use EXACTLY this structure:\n\n"
-                  f"PAPER {num} of 5\n"
-                  f"{paper['title']}\n"
-                  f"Authors: {paper['authors']}\n"
-                  f"Category: {paper['category']} | Date: {paper['published']}\n\n"
-                  f"THE PROBLEM\n"
-                  f"[3 sentences: what problem, why it is hard, what gap it fills]\n\n"
-                  f"THEIR APPROACH\n"
-                  f"[4 sentences: their method in plain English, what is new vs existing work]\n\n"
-                  f"RESULTS AND NUMBERS\n"
-                  f"[3 sentences: specific benchmarks, accuracy numbers, comparison to previous best]\n\n"
-                  f"REAL-WORLD IMPACT\n"
-                  f"[3 sentences: real use cases, who benefits, what this enables]\n\n"
-                  f"WHAT TO LEARN FROM THIS\n"
-                  f"[2 sentences: specific concept worth studying, what to look up]\n\n"
-                  f"Full paper: {paper['link']}"
-              )
+          # ── Send detailed summaries ───────────────────────────────────────
 
-              summary = ask_ai(detail_prompt)
-              if summary:
-                  send(summary)
-              else:
-                  send(
-                      f"PAPER {num} of 5\n\n"
-                      f"{paper['title']}\n"
-                      f"Authors: {paper['authors']}\n"
-                      f"Category: {paper['category']} | {paper['published']}\n\n"
-                      f"{paper['abstract']}\n\n"
-                      f"Full paper: {paper['link']}"
-                  )
-              print(f"Sent paper {num}")
-              time.sleep(3)
+          sent_today = summarize_papers(papers_to_summarize)
+
+          # ── Save sent IDs to cache ────────────────────────────────────────
+
+          save_sent(sent_today)
+          print(f"Saved {len(sent_today)} paper IDs to cache")
 
           send(
-              f"Research brief complete! ({summaries_sent} papers summarized)\n\n"
+              f"Research brief complete! ({len(papers_to_summarize)} new papers)\n\n"
               f"Tip: Pick ONE paper and skim the full PDF.\n"
               f"Message your Hermes bot to explain any concept anytime.\n\n"
               f"See you at 7 AM for AI/ML + Java news!"
           )
 
-          print(f"Done! {summaries_sent} summaries sent.")
+          print("Done!")
           PYEOF
 
       - name: Run Hermes Papers
@@ -254,3 +420,10 @@ jobs:
           CHAT_ID: ${{ secrets.CHAT_ID }}
           OPENROUTER_KEY: ${{ secrets.OPENROUTER_KEY }}
         run: python papers.py
+
+      - name: Save sent papers cache
+        uses: actions/cache/save@v3
+        if: always()
+        with:
+          path: sent_papers.txt
+          key: sent-papers-cache
