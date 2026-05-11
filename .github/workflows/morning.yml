@@ -451,10 +451,7 @@ jobs:
 
           if challenge:
               send(f"DAILY CODING CHALLENGES\n{'─'*35}\n\nTopic: {topic_label}\n\n{challenge}")
-              email_sections.append(build_section(
-                  f"Daily Coding Challenges - {topic_label}",
-                  "#2d6a4f", "CODE", plain_to_html(challenge)
-              ))
+              )
 
           # ── Build and send HTML email ─────────────────────────────────────
 
