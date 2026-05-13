@@ -1,14 +1,16 @@
-name: Hermes Morning Brief 7AM
+name: Hermes Morning Brief 8AM
 
 on:
   schedule:
-    - cron: '30 1 * * *'
+    - cron: '30 2 * * *'   # 8:00 AM IST every day
   workflow_dispatch:
 
 jobs:
   morning-brief:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout repo
@@ -54,7 +56,7 @@ jobs:
 
           # ── AI ────────────────────────────────────────────────────────────
 
-          def ask_ai(prompt, system="You are a sharp, concise AI/tech analyst."):
+          def ask_ai(prompt, system="You are a patient teacher who explains things to complete beginners using plain English, real-world analogies, and zero jargon."):
               for model in MODELS:
                   for attempt in range(2):
                       try:
@@ -70,7 +72,7 @@ jobs:
                                       {"role": "system", "content": system},
                                       {"role": "user", "content": prompt}
                                   ],
-                                  "max_tokens": 1500
+                                  "max_tokens": 1800
                               },
                               timeout=90
                           )
@@ -91,7 +93,10 @@ jobs:
           def fetch_rss(url, count=5):
               items = []
               try:
-                  resp = requests.get(url, timeout=15, headers={"User-Agent": "HermesBot/1.0"})
+                  resp = requests.get(
+                      url, timeout=15,
+                      headers={"User-Agent": "HermesBot/1.0"}
+                  )
                   content = resp.text
                   entries = content.split("<item>")[1:]
                   for entry in entries[:count]:
@@ -109,89 +114,151 @@ jobs:
                   print(f"RSS error {url}: {e}")
               return "\n".join(items)
 
-          # ── Learning topic ────────────────────────────────────────────────
+          # ── Learning topic + difficulty ───────────────────────────────────
 
           def get_learning_topic():
               try:
                   with open("learning_log.txt", "r") as f:
                       lines = [l.strip() for l in f.readlines() if l.strip()]
-                  if lines:
-                      last = lines[-1]
-                      if ":" in last:
-                          parts = last.split(":", 1)
-                          return parts[1].strip() if len(parts) > 1 else last
-                      return last
+                  if not lines:
+                      return None, "Medium"
+                  last = lines[-1]
+                  # Strip date prefix if present (e.g. "2026-05-14: ")
+                  if ": " in last:
+                      last = last.split(": ", 1)[1].strip()
+                  # Check for difficulty suffix (e.g. "Python decorators | Hard")
+                  difficulty = "Medium"
+                  if " | " in last:
+                      parts = last.rsplit(" | ", 1)
+                      topic = parts[0].strip()
+                      diff_raw = parts[1].strip().capitalize()
+                      if diff_raw in ["Easy", "Medium", "Hard"]:
+                          difficulty = diff_raw
+                  else:
+                      topic = last.strip()
+                  print(f"Topic: {topic} | Difficulty: {difficulty}")
+                  return topic, difficulty
               except Exception as e:
                   print(f"Could not read learning_log.txt: {e}")
-              return None
+              return None, "Medium"
 
-          # ── HTML Helpers ──────────────────────────────────────────────────
+          # ── Build news section prompt ─────────────────────────────────────
+
+          def build_news_prompt(source_name, articles_raw, topic_hint=""):
+              return (
+                  f"You are summarizing {source_name} news for a complete beginner in AI/ML/tech.\n"
+                  f"They have just started learning. Use plain English.\n\n"
+                  f"From the articles below, pick the 5 most important stories.\n"
+                  f"For EACH story use EXACTLY this structure:\n\n"
+                  f"STORY: [headline in plain English]\n\n"
+                  f"SIMPLE VERSION\n"
+                  f"[2-3 sentences a 15-year-old can understand. "
+                  f"No jargon. What happened and why it matters.]\n\n"
+                  f"REAL-WORLD ANALOGY\n"
+                  f"[One sentence comparing this to something from daily life.]\n\n"
+                  f"WHY IT MATTERS\n"
+                  f"[1-2 sentences: who does this affect and how]\n\n"
+                  f"---\n\n"
+                  f"Articles:\n{articles_raw[:4000]}"
+              )
+
+          # ── HTML helpers ──────────────────────────────────────────────────
 
           def plain_to_html(text):
               if not text:
-                  return "<p style='color:#999;font-family:Arial,sans-serif;'>Content unavailable.</p>"
+                  return "<p style='color:#999;font-family:Arial,sans-serif;'>Unavailable.</p>"
               lines = text.split("\n")
               parts = []
+              in_story = False
               for line in lines:
                   s = line.strip()
                   if not s:
                       parts.append("<div style='height:6px;'></div>")
+                  elif s.startswith("STORY:"):
+                      if in_story:
+                          parts.append("</div>")
+                      headline = s.replace("STORY:", "").strip()
+                      parts.append(
+                          "<div style='background:#f8f5ef;border-left:3px solid #c9a227;"
+                          "padding:14px 16px;margin:16px 0 8px;'>"
+                          "<p style='font-family:Georgia,serif;font-size:15px;"
+                          "font-weight:bold;color:#1a1a2e;margin:0;line-height:1.5;'>"
+                          + headline + "</p></div>"
+                          "<div style='padding:0 4px;margin-bottom:16px;'>"
+                      )
+                      in_story = True
+                  elif s in ["SIMPLE VERSION", "REAL-WORLD ANALOGY",
+                             "WHY IT MATTERS", "WHAT THEY DID",
+                             "THE PROBLEM", "THEIR APPROACH",
+                             "RESULTS AND NUMBERS", "WHO BENEFITS FROM THIS",
+                             "WHAT TO LEARN NEXT"] or (s.isupper() and 2 < len(s) < 60):
+                      parts.append(
+                          "<p style='font-family:Arial,sans-serif;font-size:9px;"
+                          "font-weight:bold;color:#1a1a2e;letter-spacing:2px;"
+                          "margin:14px 0 5px;text-transform:uppercase;"
+                          "border-bottom:1px solid #e8e4d9;padding-bottom:4px;'>"
+                          + s + "</p>"
+                      )
+                  elif s == "---":
+                      if in_story:
+                          parts.append("</div>")
+                          in_story = False
+                      parts.append(
+                          "<table role='presentation' width='100%' cellpadding='0'"
+                          " cellspacing='0' style='margin:8px 0;'><tr>"
+                          "<td style='border-top:1px dashed #e8e4d9;'></td>"
+                          "</tr></table>"
+                      )
                   elif s.startswith("- ") or s.startswith("* "):
                       parts.append(
-                          "<div style='display:flex;align-items:flex-start;margin:7px 0;'>"
-                          "<span style='color:#c9a227;margin-right:10px;margin-top:2px;"
-                          "font-size:16px;line-height:1;'>&#8226;</span>"
-                          "<span style='flex:1;color:#333;font-size:14px;line-height:1.7;"
-                          "font-family:Georgia,serif;'>" + s[2:] + "</span>"
-                          "</div>"
+                          "<div style='display:flex;align-items:flex-start;margin:6px 0;'>"
+                          "<span style='color:#c9a227;margin-right:10px;font-size:16px;"
+                          "line-height:1.4;'>&#8226;</span>"
+                          "<span style='flex:1;color:#333;font-size:13px;"
+                          "line-height:1.7;font-family:Georgia,serif;'>"
+                          + s[2:] + "</span></div>"
                       )
-                  elif s.isupper() and 2 < len(s) < 60:
+                  elif s[:2] in ["1.", "2.", "3.", "4.", "5."] and len(s) > 4:
                       parts.append(
-                          "<p style='font-family:Arial,sans-serif;font-size:10px;font-weight:bold;"
-                          "color:#1a1a2e;letter-spacing:2px;margin:16px 0 6px;"
-                          "text-transform:uppercase;border-bottom:1px solid #e8e4d9;"
-                          "padding-bottom:5px;'>" + s + "</p>"
-                      )
-                  elif any(s.startswith(k) for k in ["Task:", "What to use:", "Expected output:", "Hint:", "Answer:", "Full paper:"]):
-                      key, _, val = s.partition(":")
-                      parts.append(
-                          "<p style='margin:5px 0;font-size:13px;font-family:Arial,sans-serif;'>"
-                          "<strong style='color:#555;'>" + key + ":</strong>"
-                          "<span style='color:#333;'> " + val.strip() + "</span></p>"
+                          "<div style='display:flex;align-items:flex-start;margin:8px 0;'>"
+                          "<span style='background:#1a1a2e;color:#c9a227;"
+                          "font-family:Arial,sans-serif;font-size:11px;"
+                          "font-weight:bold;padding:2px 7px;margin-right:10px;"
+                          "margin-top:2px;flex-shrink:0;'>"
+                          + s[0] + "</span>"
+                          "<span style='flex:1;color:#333;font-size:13px;"
+                          "line-height:1.7;font-family:Georgia,serif;'>"
+                          + s[3:] + "</span></div>"
                       )
                   else:
                       parts.append(
-                          "<p style='margin:6px 0;line-height:1.75;color:#333;"
-                          "font-size:14px;font-family:Georgia,serif;'>" + s + "</p>"
+                          "<p style='margin:6px 0;line-height:1.8;color:#333;"
+                          "font-size:13px;font-family:Georgia,serif;'>" + s + "</p>"
                       )
+              if in_story:
+                  parts.append("</div>")
               return "\n".join(parts)
 
-          def build_section(label, color, icon, content_html):
+          def build_news_card(label, color, icon, content_html):
               return (
-                  "<table role='presentation' width='100%' cellpadding='0' cellspacing='0'"
-                  " style='margin-top:32px;'><tr><td>"
-
-                  # Section header badge
-                  "<table role='presentation' width='100%' cellpadding='0' cellspacing='0'"
-                  " style='margin-bottom:16px;'><tr>"
+                  "<table role='presentation' width='100%' cellpadding='0'"
+                  " cellspacing='0' style='margin-top:32px;'><tr><td>"
+                  "<table role='presentation' width='100%' cellpadding='0'"
+                  " cellspacing='0' style='margin-bottom:16px;'><tr>"
                   "<td style='border-bottom:2px solid " + color + ";padding-bottom:8px;'>"
-                  "<span style='background:" + color + ";color:#fff;font-family:Arial,sans-serif;"
-                  "font-size:9px;letter-spacing:2px;padding:5px 14px;"
-                  "text-transform:uppercase;font-weight:bold;'>"
-                  + icon + " " + label +
-                  "</span>"
+                  "<span style='background:" + color + ";color:#fff;"
+                  "font-family:Arial,sans-serif;font-size:9px;letter-spacing:2px;"
+                  "padding:5px 14px;text-transform:uppercase;font-weight:bold;'>"
+                  + icon + " " + label + "</span>"
                   "</td></tr></table>"
-
-                  # Content
                   "<div style='padding:0 4px;'>" + content_html + "</div>"
-
                   "</td></tr></table>"
               )
 
           def build_divider():
               return (
-                  "<table role='presentation' width='100%' cellpadding='0' cellspacing='0'"
-                  " style='margin:20px 0;'><tr>"
+                  "<table role='presentation' width='100%' cellpadding='0'"
+                  " cellspacing='0' style='margin:16px 0;'><tr>"
                   "<td style='border-top:1px solid #e8e4d9;'></td>"
                   "</tr></table>"
               )
@@ -202,85 +269,67 @@ jobs:
                   "<head><meta charset='UTF-8'>"
                   "<meta name='viewport' content='width=device-width,initial-scale=1'>"
                   "<title>The Hermes Daily</title></head>"
-                  "<body style='margin:0;padding:0;background-color:#f0ede6;"
+                  "<body style='margin:0;padding:0;background:#f0ede6;"
                   "font-family:Georgia,serif;'>"
-
-                  # Outer wrapper
-                  "<table role='presentation' width='100%' cellpadding='0' cellspacing='0'"
-                  " style='background:#f0ede6;'>"
+                  "<table role='presentation' width='100%' cellpadding='0'"
+                  " cellspacing='0' style='background:#f0ede6;'>"
                   "<tr><td align='center' style='padding:24px 12px;'>"
-
-                  # Main container
                   "<table role='presentation' style='max-width:660px;width:100%;"
-                  "background:#ffffff;border:1px solid #d4c9b0;"
+                  "background:#fff;border:1px solid #d4c9b0;"
                   "box-shadow:0 2px 8px rgba(0,0,0,0.08);'>"
-
-                  # Top accent lines
                   "<tr><td style='background:#1a1a2e;height:5px;'></td></tr>"
                   "<tr><td style='background:#c9a227;height:3px;'></td></tr>"
-
-                  # Masthead
                   "<tr><td style='background:#1a1a2e;padding:32px 40px;text-align:center;'>"
-                  "<p style='color:#c9a227;font-size:9px;letter-spacing:5px;margin:0 0 10px;"
-                  "font-family:Arial,sans-serif;text-transform:uppercase;"
-                  "font-weight:bold;'>Your Personal Intelligence Brief</p>"
-                  "<h1 style='color:#ffffff;font-size:44px;margin:0;"
+                  "<p style='color:#c9a227;font-size:9px;letter-spacing:5px;"
+                  "margin:0 0 10px;font-family:Arial,sans-serif;"
+                  "text-transform:uppercase;font-weight:bold;'>"
+                  "Your Personal Intelligence Brief</p>"
+                  "<h1 style='color:#fff;font-size:44px;margin:0;"
                   "letter-spacing:4px;font-family:Georgia,serif;"
                   "font-weight:normal;line-height:1;'>THE HERMES DAILY</h1>"
+                  "<p style='color:#c9a227;font-size:12px;margin:8px 0 0;"
+                  "font-family:Arial,sans-serif;letter-spacing:2px;'>"
+                  "MORNING EDITION</p>"
                   "<div style='border-top:1px solid #333;margin:14px 0 0;padding-top:12px;'>"
                   "<p style='color:#999;font-size:10px;margin:0;"
                   "font-family:Arial,sans-serif;letter-spacing:1px;'>"
                   + date + " &nbsp;&bull;&nbsp; " + weekday + " Morning Edition"
-                  " &nbsp;&bull;&nbsp; HERMES AI"
-                  "</p></div>"
-                  "</td></tr>"
-
-                  # Gold dividers
+                  " &nbsp;&bull;&nbsp; HERMES AI</p>"
+                  "</div></td></tr>"
                   "<tr><td style='background:#c9a227;height:3px;'></td></tr>"
                   "<tr><td style='background:#1a1a2e;height:1px;'></td></tr>"
-
-                  # Content area
                   "<tr><td style='padding:20px 40px 40px;background:#fff;'>"
                   + sections_html +
                   "</td></tr>"
-
-                  # Footer top line
                   "<tr><td style='background:#e8e4d9;height:1px;'></td></tr>"
                   "<tr><td style='background:#c9a227;height:3px;'></td></tr>"
-
-                  # Footer
                   "<tr><td style='background:#1a1a2e;padding:22px 40px;text-align:center;'>"
                   "<p style='color:#c9a227;font-size:11px;margin:0;"
-                  "font-family:Arial,sans-serif;letter-spacing:3px;"
-                  "font-weight:bold;text-transform:uppercase;'>The Hermes Daily</p>"
+                  "font-family:Arial,sans-serif;letter-spacing:3px;font-weight:bold;'>"
+                  "The Hermes Daily</p>"
                   "<p style='color:#666;font-size:10px;margin:8px 0 0;"
-                  "font-family:Arial,sans-serif;letter-spacing:0.5px;'>"
+                  "font-family:Arial,sans-serif;'>"
                   "Automated by GitHub Actions &bull; AI by OpenRouter &bull; "
-                  "News from TechCrunch, VentureBeat, MIT, HackerNews, InfoQ"
+                  "TechCrunch, VentureBeat, MIT, HackerNews, InfoQ"
                   "</p></td></tr>"
-
                   "<tr><td style='background:#c9a227;height:3px;'></td></tr>"
-
-                  "</table>"
-                  "</td></tr></table>"
+                  "</table></td></tr></table>"
                   "</body></html>"
               )
-
-          # ── Send email via Gmail SMTP ─────────────────────────────────────
 
           def send_email(subject, html_body):
               try:
                   msg = MIMEMultipart("alternative")
                   msg["Subject"] = subject
-                  msg["From"] = f"Hermes Daily <{GMAIL_USER}>"
-                  msg["To"] = GMAIL_USER
+                  msg["From"]    = f"Hermes Daily <{GMAIL_USER}>"
+                  msg["To"]      = GMAIL_USER
                   msg.attach(MIMEText(html_body, "html"))
                   with smtplib.SMTP("smtp.gmail.com", 587) as server:
                       server.ehlo()
                       server.starttls()
                       server.login(GMAIL_USER, GMAIL_PASS)
                       server.sendmail(GMAIL_USER, GMAIL_USER, msg.as_string())
-                  print("Email sent successfully!")
+                  print("Email sent!")
               except Exception as e:
                   print(f"Email error: {e}")
 
@@ -293,12 +342,12 @@ jobs:
 
           send(
               f"Good Morning! - {today} ({weekday})\n\n"
-              f"Hermes 7 AM Brief incoming:\n"
-              f"1. AI & ML News\n"
-              f"2. Hacker News\n"
-              f"3. Java in AI/ML\n"
-              f"4. Coding Challenges (your topic)\n\n"
-              f"Full newsletter also sent to your email!"
+              f"Hermes 8 AM Brief incoming:\n"
+              f"1. AI & ML News (simple + analogy)\n"
+              f"2. Hacker News (simple + analogy)\n"
+              f"3. Java in AI/ML (simple + analogy)\n"
+              f"4. Coding Challenges (your topic + difficulty)\n\n"
+              f"Full newsletter also coming to your email!"
           )
 
           email_sections = []
@@ -322,19 +371,13 @@ jobs:
                   aiml_raw += f"\n[{name}]\n{chunk}\n"
               time.sleep(0.5)
 
-          aiml_summary = ask_ai(
-              "Summarize today's AI and ML news for a student who codes and follows the field closely.\n\n"
-              "Pick the 6 most important stories from the articles below.\n"
-              "For each story write:\n"
-              "- [Headline]: [2 sentence summary of what happened and why it matters]\n\n"
-              "Focus on: new model releases, benchmark records, major announcements, breakthroughs.\n"
-              "Be specific - mention model names, companies, numbers.\n\n"
-              f"Articles:\n{aiml_raw[:4000]}"
-          )
+          aiml_summary = ask_ai(build_news_prompt("AI & ML", aiml_raw))
 
           if aiml_summary:
               send(f"AI & ML NEWS\n{'─'*35}\n\n{aiml_summary}")
-              email_sections.append(build_section("AI & ML News", "#1a1a2e", "AI", plain_to_html(aiml_summary)))
+              email_sections.append(
+                  build_news_card("AI & ML News", "#1a1a2e", "AI", plain_to_html(aiml_summary))
+              )
               email_sections.append(build_divider())
           time.sleep(2)
 
@@ -357,23 +400,21 @@ jobs:
                   obj_id   = hit.get("objectID", "")
                   hn_link  = f"https://news.ycombinator.com/item?id={obj_id}"
                   if title:
-                      hn_stories.append(f"- {title} ({points} pts, {comments} comments) {hn_link}")
+                      hn_stories.append(
+                          f"- {title} ({points} pts, {comments} comments) {hn_link}"
+                      )
               hn_raw = "\n".join(hn_stories)
               print(f"HN: {len(hn_stories)} stories fetched")
           except Exception as e:
               print(f"HN error: {e}")
 
           if hn_raw:
-              hn_summary = ask_ai(
-                  "Summarize what is trending on Hacker News today for a developer/student.\n\n"
-                  "Pick the 5 most interesting stories for someone interested in AI, ML, programming, startups.\n"
-                  "For each write:\n"
-                  "- [Story title]: [2 sentences on what it is and why HN finds it interesting]\n\n"
-                  f"Stories:\n{hn_raw[:3000]}"
-              )
+              hn_summary = ask_ai(build_news_prompt("Hacker News", hn_raw))
               if hn_summary:
                   send(f"HACKER NEWS TODAY\n{'─'*35}\n\n{hn_summary}")
-                  email_sections.append(build_section("Hacker News", "#ff6600", "HN", plain_to_html(hn_summary)))
+                  email_sections.append(
+                      build_news_card("Hacker News", "#ff6600", "HN", plain_to_html(hn_summary))
+                  )
                   email_sections.append(build_divider())
           time.sleep(2)
 
@@ -395,75 +436,106 @@ jobs:
                   java_raw += f"\n[{name}]\n{chunk}\n"
               time.sleep(0.5)
 
-          java_summary = ask_ai(
-              "Summarize the latest Java news related to AI, ML, and modern development.\n\n"
-              "Pick the 5 most relevant updates for a Java developer interested in AI/ML.\n"
-              "For each write:\n"
-              "- [Topic/Library]: [2 sentences on what it is and why a Java dev should care]\n\n"
-              "Focus on: DJL, LangChain4j, Deeplearning4j, Spring AI, new Java features for data/AI.\n"
-              "Skip anything not related to Java or AI.\n\n"
-              f"Articles:\n{java_raw[:4000]}"
-          )
+          java_summary = ask_ai(build_news_prompt("Java in AI/ML", java_raw))
 
           if java_summary:
               send(f"JAVA IN AI & ML\n{'─'*35}\n\n{java_summary}")
-              email_sections.append(build_section("Java in AI & ML", "#e76f00", "J", plain_to_html(java_summary)))
-              email_sections.append(build_divider())
+              email_sections.append(
+                  build_news_card("Java in AI & ML", "#e76f00", "J", plain_to_html(java_summary))
+              )
           time.sleep(2)
 
-          # ── 4. CODING CHALLENGES ──────────────────────────────────────────
+          # ── 4. CODING CHALLENGES (Telegram only) ──────────────────────────
 
           print("Generating coding challenges...")
-          learning_topic = get_learning_topic()
+          learning_topic, difficulty = get_learning_topic()
+
+          diff_instructions = {
+              "Easy": (
+                  "The student is a complete beginner. Keep challenges very simple.\n"
+                  "EASY: A 5-line script, basic syntax only.\n"
+                  "MEDIUM: 10-15 lines, one concept at a time.\n"
+                  "HARD: 20 lines max, one real-world mini-problem."
+              ),
+              "Medium": (
+                  "The student knows the basics. Make challenges practical.\n"
+                  "EASY: Quick warmup, directly tests the topic.\n"
+                  "MEDIUM: Combines topic with one other concept.\n"
+                  "HARD: A real-world mini-project using the topic."
+              ),
+              "Hard": (
+                  "The student is comfortable with the topic. Push them.\n"
+                  "EASY: Something they should solve in under 5 minutes.\n"
+                  "MEDIUM: Requires thinking about edge cases.\n"
+                  "HARD: Production-level problem, optimization required."
+              ),
+          }
+
+          diff_guide = diff_instructions.get(difficulty, diff_instructions["Medium"])
 
           if learning_topic:
               challenge_prompt = (
-                  f"Generate 3 coding challenges specifically on this topic: {learning_topic}\n\n"
-                  "The student recently studied this. Challenges must directly test what they learned.\n\n"
-                  f"YOUR TOPIC: {learning_topic}\n\n"
-                  "EASY\n"
-                  f"Task: [beginner challenge directly testing {learning_topic}]\n"
-                  "What to use: [specific concept or method]\n"
-                  "Expected output: [exact output]\n\n"
-                  "MEDIUM\n"
-                  f"Task: [intermediate challenge combining {learning_topic} with something practical]\n"
-                  "What to use: [specific tools]\n"
-                  "Expected output: [exact output]\n\n"
-                  "HARD\n"
-                  f"Task: [advanced real-world application of {learning_topic}]\n"
-                  "Hint: [one-line hint]\n"
-                  "Expected output: [exact output]\n\n"
-                  "BONUS\n"
-                  f"Task: [conceptual question testing deep understanding of {learning_topic}]\n"
-                  "Answer: [short answer]"
+                  f"Generate 3 coding challenges on this topic: {learning_topic}\n"
+                  f"Difficulty level chosen by student: {difficulty}\n\n"
+                  f"{diff_guide}\n\n"
+                  f"Use EXACTLY this format:\n\n"
+                  f"YOUR TOPIC: {learning_topic}\n"
+                  f"DIFFICULTY: {difficulty}\n\n"
+                  f"EASY\n"
+                  f"Task: [challenge]\n"
+                  f"What to use: [specific method or concept from {learning_topic}]\n"
+                  f"Expected output:\n"
+                  f"[show exact output]\n\n"
+                  f"MEDIUM\n"
+                  f"Task: [challenge]\n"
+                  f"What to use: [specific tools]\n"
+                  f"Expected output:\n"
+                  f"[show exact output]\n\n"
+                  f"HARD\n"
+                  f"Task: [challenge]\n"
+                  f"Hint: [one-line hint]\n"
+                  f"Expected output:\n"
+                  f"[show exact output]\n\n"
+                  f"BONUS QUESTION\n"
+                  f"Task: [one conceptual question that tests deep understanding]\n"
+                  f"Answer: [short answer]\n\n"
+                  f"Keep all challenges in Python unless topic is specifically Java."
               )
           else:
               challenge_prompt = (
-                  "Generate 3 Python coding challenges on fundamentals.\n\n"
-                  "Add this note at top: Update your learning_log.txt in GitHub for personalized challenges!\n\n"
+                  "Generate 3 Python beginner challenges on fundamentals.\n\n"
+                  "Note at top: Add a line to learning_log.txt like:\n"
+                  "2026-05-14: Your topic here | Easy\n"
+                  "to get personalized challenges!\n\n"
                   "EASY\nTask: [challenge]\nExpected output: [output]\n\n"
                   "MEDIUM\nTask: [challenge]\nExpected output: [output]\n\n"
                   "HARD\nTask: [challenge]\nHint: [hint]\nExpected output: [output]"
               )
 
           challenge = ask_ai(challenge_prompt)
-          topic_label = learning_topic if learning_topic else "Python Fundamentals"
+          topic_label = f"{learning_topic} ({difficulty})" if learning_topic else "Python Fundamentals"
 
           if challenge:
-              send(f"DAILY CODING CHALLENGES\n{'─'*35}\n\nTopic: {topic_label}\n\n{challenge}")
+              send(
+                  f"DAILY CODING CHALLENGES\n{'─'*35}\n\n"
+                  f"Topic: {topic_label}\n\n"
+                  f"{challenge}\n\n"
+                  f"─────\n"
+                  f"To change topic/difficulty: edit learning_log.txt\n"
+                  f"Format: 2026-05-14: your topic | Easy/Medium/Hard"
               )
 
-          # ── Build and send HTML email ─────────────────────────────────────
+          # ── Build and send email ───────────────────────────────────────────
 
           if email_sections:
-              print("Building and sending email...")
+              print("Building email...")
               html = build_full_email(today, weekday, "".join(email_sections))
               send_email(f"The Hermes Daily - {today} Morning Brief", html)
 
           send(
-              f"Done! Your 7 AM brief is complete.\n\n"
-              f"Full newsletter sent to your email inbox.\n"
-              f"Research papers from 5 AM are also in your inbox.\n"
+              f"Done! Your 8 AM brief is complete.\n\n"
+              f"Full newsletter sent to your email.\n"
+              f"Research papers from 6:30 AM are also in your inbox.\n"
               f"Have a productive day!"
           )
 
