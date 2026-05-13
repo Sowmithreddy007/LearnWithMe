@@ -1,8 +1,8 @@
-name: Hermes Research Papers 5 AM
+name: Hermes Research Papers 6:30AM
 
 on:
   schedule:
-    - cron: '0 1 * * *' 
+    - cron: '0 1 * * *'   # 6:30 AM IST every day
   workflow_dispatch:
 
 jobs:
@@ -42,12 +42,10 @@ jobs:
           GMAIL_PASS = os.environ["GMAIL_APP_PASSWORD"]
 
           MODELS = [
-              "nvidia/nemotron-3-super-120b-a12b:free",
               "meta-llama/llama-3.3-70b-instruct:free",
               "google/gemma-3-27b-it:free",
+              "mistralai/mistral-small-3.1-24b-instruct:free",
           ]
-
-          # ── Sent papers tracker ───────────────────────────────────────────
 
           SENT_FILE = "sent_papers.txt"
 
@@ -64,8 +62,6 @@ jobs:
               with open(SENT_FILE, "w") as f:
                   f.write("\n".join(trimmed))
 
-          # ── Telegram ──────────────────────────────────────────────────────
-
           def send(text):
               chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
               for chunk in chunks:
@@ -79,9 +75,14 @@ jobs:
                       print(f"Telegram error: {e}")
                   time.sleep(1)
 
-          # ── AI ────────────────────────────────────────────────────────────
-
-          def ask_ai(prompt, system="You are a patient teacher who explains complex research to complete beginners."):
+          def ask_ai(prompt):
+              system = (
+                  "You are a professional science communicator writing for a beginner audience. "
+                  "You write clean, structured summaries with no internal commentary, no meta-talk, "
+                  "no reasoning visible to the reader. Output only the final formatted text. "
+                  "Never explain what you are about to do. Never use placeholder brackets. "
+                  "Write the actual content directly."
+              )
               for model in MODELS:
                   for attempt in range(2):
                       try:
@@ -103,17 +104,26 @@ jobs:
                           )
                           data = r.json()
                           if "choices" in data and data["choices"]:
+                              content = data["choices"][0]["message"]["content"].strip()
+                              # Hard filter: reject if model leaked reasoning
+                              bad_signals = [
+                                  "let me ", "i need to ", "i'll ", "we need to ",
+                                  "the instruction", "let's ", "i should ", "okay so",
+                                  "now i ", "first i ", "the user wants"
+                              ]
+                              lower = content.lower()
+                              if any(sig in lower[:300] for sig in bad_signals):
+                                  print(f"Model {model} leaked reasoning — trying next model")
+                                  break
                               print(f"Model used: {model}")
-                              return data["choices"][0]["message"]["content"]
+                              return content
                           else:
-                              print(f"Model {model} failed: {data.get('error',{}).get('message','unknown')}")
+                              print(f"Model {model} failed: {data.get('error',{}).get('message','')}")
                               break
                       except Exception as e:
                           print(f"Attempt {attempt+1} error: {e}")
                           time.sleep(3)
               return None
-
-          # ── arXiv fetcher ─────────────────────────────────────────────────
 
           def fetch_arxiv(category, count=8):
               papers = []
@@ -159,153 +169,186 @@ jobs:
                   print(f"arXiv error for {category}: {e}")
               return papers
 
-          # ── Build summary prompt ──────────────────────────────────────────
+          def build_summary_prompt(num, total, paper, label="TODAY"):
+              return f"""Summarize this research paper for a complete beginner who just started learning about AI.
 
-          def build_summary_prompt(num, total, paper, is_weekly=False):
-              label = "WEEKLY BEST" if is_weekly else "TODAY"
-              return (
-                  f"You are explaining a research paper to a complete beginner who just started "
-                  f"learning about AI and ML. They are smart but have no technical background.\n\n"
-                  f"Paper: {paper['title']}\n"
-                  f"Authors: {paper['authors']}\n"
-                  f"Date: {paper['published']}\n"
-                  f"Category: {paper['category']}\n"
-                  f"Abstract: {paper['abstract']}\n\n"
-                  f"Write the summary in EXACTLY this structure. "
-                  f"Do not skip any section. Do not use jargon without explaining it:\n\n"
-                  f"PAPER {num} of {total} - {label}\n"
-                  f"{paper['title']}\n"
-                  f"Authors: {paper['authors']}\n"
-                  f"Category: {paper['category']} | Date: {paper['published']}\n\n"
-                  f"SIMPLE VERSION\n"
-                  f"[Write 4-5 sentences in plain English that a 15-year-old could understand. "
-                  f"No jargon. Explain what problem they solved and why it matters. "
-                  f"Pretend you are explaining it to a friend who has never studied AI.]\n\n"
-                  f"REAL-WORLD ANALOGY\n"
-                  f"[Give ONE analogy comparing this research to something from everyday life. "
-                  f"Example: 'This is like teaching a child to recognize cats by showing them "
-                  f"10,000 pictures instead of just describing what a cat looks like.' "
-                  f"Make it vivid and relatable.]\n\n"
-                  f"WHAT THEY ACTUALLY DID\n"
-                  f"THE PROBLEM\n"
-                  f"[2-3 sentences: What specific gap or problem exists? "
-                  f"Why has nobody solved it before? Keep it simple.]\n\n"
-                  f"THEIR APPROACH\n"
-                  f"[3-4 sentences: What technique or method did they use? "
-                  f"If you must use a technical term, explain it in brackets immediately after. "
-                  f"Example: 'They used a transformer (a type of AI that reads text in chunks) to...']\n\n"
-                  f"RESULTS AND NUMBERS\n"
-                  f"[2-3 sentences: What did they achieve? Include numbers if available. "
-                  f"Explain what those numbers mean. Example: '95 percent accuracy means it gets "
-                  f"it right 95 out of 100 times.']\n\n"
-                  f"WHO BENEFITS FROM THIS\n"
-                  f"[2-3 sentences: Name specific real people or industries this helps. "
-                  f"Doctors? Students? Farmers? Self-driving car companies? Be concrete.]\n\n"
-                  f"WHAT TO LEARN NEXT\n"
-                  f"[List exactly 3 topics the student should Google and study to understand "
-                  f"this paper better. Format as:\n"
-                  f"1. [Topic name] - [one sentence on why this topic is relevant]\n"
-                  f"2. [Topic name] - [one sentence]\n"
-                  f"3. [Topic name] - [one sentence]]\n\n"
-                  f"Full paper: {paper['link']}"
-              )
+Paper details:
+Title: {paper['title']}
+Authors: {paper['authors']}
+Date: {paper['published']}
+Category: {paper['category']}
+Abstract: {paper['abstract']}
 
-          # ── HTML helpers ──────────────────────────────────────────────────
+Write the summary using this exact format. Write actual content for each section — no placeholders, no brackets, no meta-commentary:
+
+PAPER {num} of {total} — {label}
+{paper['title']}
+Authors: {paper['authors']}
+Category: {paper['category']} | Date: {paper['published']}
+
+━━━ SIMPLE VERSION ━━━
+Explain this paper in 4-5 plain sentences that a curious 15-year-old can understand. Imagine explaining it to a smart friend who has never studied AI. Avoid all technical terms. Focus on what the researchers did and why it matters for ordinary people.
+
+━━━ REAL-WORLD ANALOGY ━━━
+Write a single vivid analogy that compares this research to something from everyday life — cooking, sports, school, driving, shopping, or anything relatable. Make it specific and memorable.
+
+━━━ WHAT THEY ACTUALLY DID ━━━
+
+THE PROBLEM
+In 2-3 sentences, explain what specific gap or challenge this research addresses. Why did this problem need solving? What was missing before this paper?
+
+THEIR APPROACH
+In 3-4 sentences, describe the technique or method they developed. If you must use a technical term, immediately explain it in plain English in parentheses. Focus on the core idea, not implementation details.
+
+RESULTS AND NUMBERS
+In 2-3 sentences, describe what they achieved. If there are accuracy numbers or benchmark scores, include them and explain what they mean in plain terms. For example: "96% accuracy means the system was correct 96 times out of 100."
+
+WHO BENEFITS FROM THIS
+Name 2-3 specific groups of real people — doctors, students, farmers, engineers, companies — who will benefit from this research and briefly say how their lives or work improves.
+
+WHAT TO LEARN NEXT
+List exactly 3 topics the student should study to understand this paper better:
+1. [Topic name] — one sentence explaining why this topic is directly relevant to this paper
+2. [Topic name] — one sentence explaining relevance
+3. [Topic name] — one sentence explaining relevance
+
+Full paper: {paper['link']}"""
+
+          def build_weekly_overview_prompt(num_papers, weekly_text):
+              return f"""Write a weekly digest of AI/ML research for a complete beginner.
+
+You have {num_papers} arXiv papers from this week below. Write a clean, professional weekly overview.
+
+Use this exact format:
+
+THIS WEEK IN AI RESEARCH
+
+BIGGEST THEMES
+Write 3-4 sentences describing the major research directions researchers were focused on this week. Be specific — name actual topics, not vague terms like "various advances."
+
+STANDOUT PAPER OF THE WEEK
+Name one paper that was most impressive. In 3-4 sentences, explain in plain English what it did and why it stands out above everything else this week.
+
+EMERGING TREND TO WATCH
+In 2-3 sentences, describe one new pattern or technique appearing across multiple papers. Explain why a beginner should pay attention to it.
+
+BY CATEGORY
+AI: one plain sentence on what happened in general AI research
+ML: one plain sentence on machine learning research
+NLP: one plain sentence on natural language processing
+Computer Vision: one plain sentence on image and video AI
+Robotics: one plain sentence on robotics research
+
+PAPERS:
+{weekly_text[:5000]}"""
 
           def plain_to_html(text):
               if not text:
-                  return "<p style='color:#999;font-family:Arial,sans-serif;'>Unavailable.</p>"
+                  return "<p style='color:#999;font-family:Arial,sans-serif;'>Content unavailable.</p>"
               lines = text.split("\n")
               parts = []
               for line in lines:
                   s = line.strip()
                   if not s:
-                      parts.append("<div style='height:6px;'></div>")
-                  elif s.startswith("- ") or s.startswith("* "):
+                      parts.append("<div style='height:5px;'></div>")
+                  elif s.startswith("Full paper:"):
+                      link = s.replace("Full paper:", "").strip()
                       parts.append(
-                          "<div style='display:flex;align-items:flex-start;margin:6px 0;'>"
-                          "<span style='color:#c9a227;margin-right:10px;font-size:16px;"
-                          "line-height:1.4;'>&#8226;</span>"
-                          "<span style='flex:1;color:#333;font-size:13px;"
-                          "line-height:1.7;font-family:Georgia,serif;'>"
-                          + s[2:] + "</span></div>"
+                          "<p style='margin:18px 0 0;'>"
+                          "<a href='" + link + "' style='display:inline-block;"
+                          "background:#1a1a2e;color:#c9a227;"
+                          "font-family:Arial,sans-serif;font-size:9px;"
+                          "font-weight:bold;letter-spacing:2px;padding:8px 18px;"
+                          "text-decoration:none;text-transform:uppercase;'>"
+                          "READ FULL PAPER &rarr;</a></p>"
                       )
-                  elif s[:2] in ["1.", "2.", "3."] and len(s) > 4:
+                  elif s.startswith("━━━") and s.endswith("━━━"):
+                      label = s.replace("━━━", "").strip()
                       parts.append(
-                          "<div style='display:flex;align-items:flex-start;margin:8px 0;'>"
-                          "<span style='background:#1a1a2e;color:#c9a227;font-family:Arial;"
-                          "font-size:11px;font-weight:bold;padding:2px 7px;"
-                          "margin-right:10px;margin-top:2px;flex-shrink:0;'>"
-                          + s[0] + "</span>"
-                          "<span style='flex:1;color:#333;font-size:13px;"
-                          "line-height:1.7;font-family:Georgia,serif;'>"
-                          + s[3:] + "</span></div>"
+                          "<p style='font-family:Arial,sans-serif;font-size:10px;"
+                          "font-weight:bold;color:#fff;background:#1a1a2e;"
+                          "letter-spacing:2px;margin:20px 0 8px;"
+                          "padding:6px 12px;text-transform:uppercase;'>"
+                          + label + "</p>"
                       )
                   elif s.isupper() and 2 < len(s) < 60:
                       parts.append(
                           "<p style='font-family:Arial,sans-serif;font-size:9px;"
                           "font-weight:bold;color:#1a1a2e;letter-spacing:2px;"
-                          "margin:18px 0 6px;text-transform:uppercase;"
-                          "border-bottom:1px solid #e8e4d9;padding-bottom:5px;'>"
+                          "margin:16px 0 5px;text-transform:uppercase;"
+                          "border-bottom:1px solid #e8e4d9;padding-bottom:4px;'>"
                           + s + "</p>"
                       )
-                  elif s.startswith("Full paper:"):
-                      link = s.replace("Full paper:", "").strip()
+                  elif s.startswith("Authors:") or s.startswith("Category:"):
                       parts.append(
-                          "<p style='margin:14px 0 0;'>"
-                          "<a href='" + link + "' style='display:inline-block;"
-                          "background:#1a1a2e;color:#c9a227;font-family:Arial,sans-serif;"
-                          "font-size:9px;font-weight:bold;letter-spacing:2px;"
-                          "padding:7px 16px;text-decoration:none;text-transform:uppercase;'>"
-                          "READ FULL PAPER &rarr;</a></p>"
+                          "<p style='color:#888;font-size:11px;margin:2px 0;"
+                          "font-family:Arial,sans-serif;'>" + s + "</p>"
+                      )
+                  elif s.startswith("PAPER ") and " of " in s:
+                      parts.append(
+                          "<p style='background:#c9a227;color:#1a1a2e;"
+                          "font-family:Arial,sans-serif;font-size:9px;"
+                          "font-weight:bold;letter-spacing:2px;padding:5px 12px;"
+                          "margin:0 0 10px;text-transform:uppercase;display:inline-block;'>"
+                          + s + "</p>"
+                      )
+                  elif s[:2] in ["1.", "2.", "3."]:
+                      parts.append(
+                          "<div style='display:flex;align-items:flex-start;margin:8px 0;'>"
+                          "<span style='background:#1a1a2e;color:#c9a227;"
+                          "font-family:Arial,sans-serif;font-size:11px;"
+                          "font-weight:bold;padding:2px 8px;margin-right:10px;"
+                          "margin-top:2px;flex-shrink:0;'>" + s[0] + "</span>"
+                          "<span style='color:#333;font-size:13px;line-height:1.7;"
+                          "font-family:Georgia,serif;'>" + s[3:] + "</span></div>"
                       )
                   else:
                       parts.append(
-                          "<p style='margin:6px 0;line-height:1.8;color:#333;"
+                          "<p style='margin:5px 0;line-height:1.8;color:#333;"
                           "font-size:13px;font-family:Georgia,serif;'>" + s + "</p>"
                       )
               return "\n".join(parts)
 
           def build_paper_card(num, total, paper, summary, is_weekly=False):
-              badge = f"PAPER {num} OF {total}" + (" - WEEKLY BEST" if is_weekly else "")
+              badge = f"PAPER {num} OF {total}" + (" — WEEKLY BEST" if is_weekly else " — TODAY")
               content = plain_to_html(summary) if summary else (
-                  "<p style='font-family:Georgia,serif;font-size:13px;color:#333;'>"
-                  + paper["abstract"] + "</p>"
+                  "<p style='font-family:Georgia,serif;font-size:13px;"
+                  "color:#333;line-height:1.7;'>" + paper["abstract"] + "</p>"
               )
               return (
                   "<table role='presentation' width='100%' cellpadding='0'"
-                  " cellspacing='0' style='margin:28px 0;"
-                  "border:1px solid #e8e4d9;background:#fafaf8;'>"
+                  " cellspacing='0' style='margin:28px 0;border:1px solid #e0dbd0;"
+                  "background:#fafaf8;border-radius:2px;'>"
                   "<tr>"
-                  "<td style='background:#c9a227;width:4px;'></td>"
-                  "<td style='padding:22px 26px;'>"
-                  "<div style='margin-bottom:12px;'>"
+                  "<td style='background:#c9a227;width:5px;border-radius:2px 0 0 2px;'></td>"
+                  "<td style='padding:24px 28px;'>"
+                  "<div style='margin-bottom:14px;'>"
                   "<span style='background:#1a1a2e;color:#c9a227;"
                   "font-family:Arial,sans-serif;font-size:8px;"
-                  "font-weight:bold;letter-spacing:2px;padding:4px 12px;"
+                  "font-weight:bold;letter-spacing:2.5px;padding:5px 12px;"
                   "text-transform:uppercase;'>" + badge + "</span>"
                   "</div>"
-                  "<h2 style='color:#1a1a2e;font-size:17px;margin:0 0 8px;"
-                  "font-family:Georgia,serif;line-height:1.5;'>"
+                  "<h2 style='color:#1a1a2e;font-size:18px;margin:0 0 8px;"
+                  "font-family:Georgia,serif;line-height:1.4;font-weight:bold;'>"
                   + paper["title"] + "</h2>"
-                  "<p style='color:#999;font-size:11px;margin:0 0 16px;"
-                  "font-family:Arial,sans-serif;border-bottom:1px solid #e8e4d9;"
-                  "padding-bottom:14px;'>"
-                  + paper["authors"] + " &bull; "
-                  + paper["category"] + " &bull; "
+                  "<p style='color:#888;font-size:11px;margin:0 0 18px;"
+                  "font-family:Arial,sans-serif;letter-spacing:0.3px;"
+                  "border-bottom:1px solid #e8e4d9;padding-bottom:14px;'>"
+                  + paper["authors"] + " &nbsp;&bull;&nbsp; "
+                  + paper["category"] + " &nbsp;&bull;&nbsp; "
                   + paper["published"] + "</p>"
                   "<div>" + content + "</div>"
                   "</td></tr></table>"
               )
 
-          def build_section_header(label, color):
+          def build_section_header(label, color="#1a1a2e"):
               return (
                   "<table role='presentation' width='100%' cellpadding='0'"
-                  " cellspacing='0' style='margin:28px 0 0;'><tr>"
-                  "<td style='border-bottom:2px solid " + color + ";padding-bottom:8px;'>"
+                  " cellspacing='0' style='margin:30px 0 0;'><tr>"
+                  "<td style='border-bottom:3px solid " + color + ";padding-bottom:10px;'>"
                   "<span style='background:" + color + ";color:#fff;"
-                  "font-family:Arial,sans-serif;font-size:9px;letter-spacing:2px;"
-                  "padding:5px 14px;text-transform:uppercase;font-weight:bold;'>"
+                  "font-family:Arial,sans-serif;font-size:9px;letter-spacing:3px;"
+                  "padding:6px 16px;text-transform:uppercase;font-weight:bold;'>"
                   + label + "</span>"
                   "</td></tr></table>"
               )
@@ -320,55 +363,71 @@ jobs:
                   "font-family:Georgia,serif;'>"
                   "<table role='presentation' width='100%' cellpadding='0'"
                   " cellspacing='0' style='background:#f0ede6;'>"
-                  "<tr><td align='center' style='padding:24px 12px;'>"
+                  "<tr><td align='center' style='padding:28px 12px;'>"
                   "<table role='presentation' style='max-width:680px;width:100%;"
                   "background:#fff;border:1px solid #d4c9b0;"
-                  "box-shadow:0 2px 8px rgba(0,0,0,0.08);'>"
-                  "<tr><td style='background:#1a1a2e;height:5px;'></td></tr>"
+                  "box-shadow:0 4px 16px rgba(0,0,0,0.1);'>"
+
+                  # Top accent lines
+                  "<tr><td style='background:#1a1a2e;height:6px;'></td></tr>"
                   "<tr><td style='background:#c9a227;height:3px;'></td></tr>"
-                  "<tr><td style='background:#1a1a2e;padding:32px 44px;text-align:center;'>"
-                  "<p style='color:#c9a227;font-size:9px;letter-spacing:5px;"
-                  "margin:0 0 10px;font-family:Arial,sans-serif;"
+
+                  # Masthead
+                  "<tr><td style='background:#1a1a2e;padding:36px 48px;text-align:center;'>"
+                  "<p style='color:#c9a227;font-size:9px;letter-spacing:6px;"
+                  "margin:0 0 12px;font-family:Arial,sans-serif;"
                   "text-transform:uppercase;font-weight:bold;'>"
                   "Your Personal Intelligence Brief</p>"
-                  "<h1 style='color:#fff;font-size:44px;margin:0;letter-spacing:4px;"
+                  "<h1 style='color:#fff;font-size:48px;margin:0;letter-spacing:5px;"
                   "font-family:Georgia,serif;font-weight:normal;line-height:1;'>"
                   "THE HERMES DAILY</h1>"
-                  "<p style='color:#c9a227;font-size:12px;margin:8px 0 0;"
-                  "font-family:Arial,sans-serif;letter-spacing:2px;'>"
+                  "<p style='color:#c9a227;font-size:11px;margin:10px 0 0;"
+                  "font-family:Arial,sans-serif;letter-spacing:4px;'>"
                   "RESEARCH EDITION</p>"
-                  "<div style='border-top:1px solid #333;margin:14px 0 0;padding-top:12px;'>"
-                  "<p style='color:#999;font-size:10px;margin:0;"
-                  "font-family:Arial,sans-serif;letter-spacing:1px;'>"
+                  "<div style='border-top:1px solid #2d2d4e;margin:16px 0 0;padding-top:14px;'>"
+                  "<p style='color:#888;font-size:10px;margin:0;"
+                  "font-family:Arial,sans-serif;letter-spacing:1.5px;'>"
                   + date + " &nbsp;&bull;&nbsp; " + edition_label +
-                  " &nbsp;&bull;&nbsp; HERMES AI</p>"
-                  "</div></td></tr>"
+                  " &nbsp;&bull;&nbsp; HERMES AI"
+                  "</p></div></td></tr>"
+
                   "<tr><td style='background:#c9a227;height:3px;'></td></tr>"
-                  "<tr><td style='background:#1a1a2e;height:1px;'></td></tr>"
-                  "<tr><td style='padding:24px 44px 0;background:#fff;'>"
+                  "<tr><td style='background:#2d2d4e;height:1px;'></td></tr>"
+
+                  # Intro strip
+                  "<tr><td style='padding:20px 48px 0;background:#fff;'>"
                   "<table role='presentation' width='100%' cellpadding='0'"
                   " cellspacing='0' style='background:#f8f5ef;"
                   "border-left:4px solid #c9a227;'>"
-                  "<tr><td style='padding:14px 18px;'>"
+                  "<tr><td style='padding:14px 20px;'>"
                   "<p style='color:#555;font-size:13px;margin:0;"
-                  "font-family:Georgia,serif;line-height:1.6;'>"
+                  "font-family:Georgia,serif;line-height:1.7;font-style:italic;'>"
                   + intro_text + "</p>"
                   "</td></tr></table></td></tr>"
-                  "<tr><td style='padding:0 44px 44px;background:#fff;'>"
+
+                  # Body
+                  "<tr><td style='padding:0 48px 48px;background:#fff;'>"
                   + body_html +
                   "</td></tr>"
+
+                  # Footer
                   "<tr><td style='background:#e8e4d9;height:1px;'></td></tr>"
                   "<tr><td style='background:#c9a227;height:3px;'></td></tr>"
-                  "<tr><td style='background:#1a1a2e;padding:22px 44px;text-align:center;'>"
+                  "<tr><td style='background:#1a1a2e;padding:24px 48px;text-align:center;'>"
                   "<p style='color:#c9a227;font-size:11px;margin:0;"
-                  "font-family:Arial,sans-serif;letter-spacing:3px;font-weight:bold;'>"
-                  "THE HERMES DAILY - RESEARCH</p>"
+                  "font-family:Arial,sans-serif;letter-spacing:4px;font-weight:bold;'>"
+                  "THE HERMES DAILY</p>"
                   "<p style='color:#666;font-size:10px;margin:8px 0 0;"
+                  "font-family:Arial,sans-serif;letter-spacing:0.5px;'>"
+                  "Papers sourced from arXiv &bull; cs.AI &bull; cs.LG &bull; "
+                  "cs.CL &bull; cs.CV &bull; cs.RO"
+                  "</p>"
+                  "<p style='color:#444;font-size:10px;margin:6px 0 0;"
                   "font-family:Arial,sans-serif;'>"
-                  "Papers from arXiv (cs.AI, cs.LG, cs.CL, cs.CV, cs.RO) "
-                  "&bull; Summaries by OpenRouter AI"
+                  "Automated by GitHub Actions &bull; Summaries by OpenRouter AI"
                   "</p></td></tr>"
                   "<tr><td style='background:#c9a227;height:3px;'></td></tr>"
+
                   "</table></td></tr></table>"
                   "</body></html>"
               )
@@ -389,8 +448,6 @@ jobs:
               except Exception as e:
                   print(f"Email error: {e}")
 
-          # ── Categories ────────────────────────────────────────────────────
-
           categories = {
               "AI (cs.AI)":               "cs.AI",
               "Machine Learning (cs.LG)": "cs.LG",
@@ -409,11 +466,12 @@ jobs:
           if weekday in ["Saturday", "Sunday"]:
 
               send(
-                  f"5:00 AM Weekend Research Digest - {today} ({weekday})\n\n"
+                  f"6:30 AM Weekend Research Digest — {today}\n\n"
                   f"arXiv is closed on weekends.\n"
-                  f"Sending your full WEEK IN AI RESEARCH digest!\n\n"
-                  f"Each paper has a simple explanation + real-world analogy + what to learn next.\n"
-                  f"Full newsletter also coming to your email!"
+                  f"Your full WEEK IN AI RESEARCH digest is incoming.\n\n"
+                  f"Each paper includes a plain English summary, real-world analogy, "
+                  f"and what to study next.\n\n"
+                  f"Full newsletter also coming to your email."
               )
 
               weekly_papers = []
@@ -427,7 +485,7 @@ jobs:
               print(f"Weekly papers: {len(weekly_papers)}")
 
               if len(weekly_papers) == 0:
-                  send("Could not fetch weekly papers. arXiv may be down.")
+                  send("Could not fetch weekly papers. arXiv may be down. Try again later.")
                   exit()
 
               weekly_text = ""
@@ -438,31 +496,15 @@ jobs:
                       f"Abstract: {p['abstract'][:300]}\n---\n"
                   )
 
-              overview_prompt = (
-                  f"You are summarizing a week of AI research for a complete beginner.\n\n"
-                  f"Use plain English. No jargon. Write like you are texting a smart friend "
-                  f"who has never studied AI.\n\n"
-                  f"From these {len(weekly_papers)} papers write a WEEKLY OVERVIEW:\n\n"
-                  "1. BIGGEST THEMES THIS WEEK\n"
-                  "[What were researchers focused on? Explain each theme in 1-2 plain sentences.]\n\n"
-                  "2. MOST EXCITING PAPER THIS WEEK\n"
-                  "[Which one paper was most impressive and why? Explain it simply.]\n\n"
-                  "3. ONE TREND TO WATCH\n"
-                  "[Something new appearing across multiple papers. Why does it matter?]\n\n"
-                  "4. ONE LINE PER AREA\n"
-                  "[AI, ML, NLP, Computer Vision, Robotics - one plain English sentence each]\n\n"
-                  f"PAPERS:\n{weekly_text[:5000]}"
-              )
-
-              overview = ask_ai(overview_prompt)
+              overview = ask_ai(build_weekly_overview_prompt(len(weekly_papers), weekly_text))
               if overview:
                   send(f"THIS WEEK IN AI RESEARCH\n{'='*35}\n\n{overview}")
               time.sleep(3)
 
               selection_prompt = (
-                  "From these arXiv papers, select the TOP 5 most impactful ones this week.\n\n"
-                  "Return ONLY a numbered list of exact titles. Nothing else.\n"
-                  "Example:\n1. Title One\n2. Title Two\n\n"
+                  f"From these arXiv papers, select the 5 most impactful and "
+                  f"interesting papers of the week.\n\n"
+                  f"Return only a numbered list of exact titles. No commentary.\n\n"
                   f"PAPERS:\n{weekly_text[:5000]}"
               )
               top_5_raw = ask_ai(selection_prompt) or ""
@@ -483,7 +525,7 @@ jobs:
               email_body = build_section_header("THIS WEEK IN AI RESEARCH", "#1a1a2e")
               if overview:
                   email_body += (
-                      "<div style='margin:16px 0;padding:16px 20px;"
+                      "<div style='margin:18px 0;padding:18px 22px;"
                       "background:#f8f5ef;border-left:4px solid #1a1a2e;'>"
                       + plain_to_html(overview) + "</div>"
                   )
@@ -492,14 +534,15 @@ jobs:
               total = len(papers_to_summarize)
               for idx, paper in enumerate(papers_to_summarize):
                   num = idx + 1
-                  prompt = build_summary_prompt(num, total, paper, is_weekly=True)
-                  summary = ask_ai(prompt)
+                  summary = ask_ai(build_summary_prompt(num, total, paper, "WEEKLY BEST"))
                   if summary:
                       send(summary)
                   else:
                       send(
-                          f"PAPER {num}\n\n{paper['title']}\n\n"
-                          f"{paper['abstract']}\n\n{paper['link']}"
+                          f"PAPER {num} of {total}\n\n"
+                          f"{paper['title']}\n"
+                          f"{paper['abstract']}\n\n"
+                          f"Full paper: {paper['link']}"
                       )
                   email_body += build_paper_card(num, total, paper, summary, is_weekly=True)
                   print(f"Sent paper {num}/{total}")
@@ -508,17 +551,18 @@ jobs:
               html = build_full_email(
                   today, weekday,
                   f"{weekday} Weekend Research Digest",
-                  f"arXiv does not publish on weekends. Here is your full week in AI research "
-                  f"across {len(weekly_papers)} papers. Each summary includes a simple explanation, "
-                  f"a real-world analogy, and what to learn next - perfect for beginners.",
+                  f"arXiv publishes no new papers on weekends. This is your complete week in "
+                  f"AI research — {len(weekly_papers)} papers across AI, ML, NLP, Computer "
+                  f"Vision, and Robotics. Each summary is written for beginners with plain "
+                  f"English explanations, real-world analogies, and learning recommendations.",
                   email_body
               )
-              send_email(f"The Hermes Daily - Week in AI Research ({today})", html)
+              send_email(f"The Hermes Daily — Week in AI Research ({today})", html)
 
               send(
                   f"Weekend digest complete!\n\n"
                   f"Full newsletter sent to your email.\n"
-                  f"Enjoy your weekend! New papers Monday at 5 AM."
+                  f"Enjoy your weekend. New papers resume Monday at 6:30 AM."
               )
               exit()
 
@@ -543,21 +587,21 @@ jobs:
 
           if len(new_papers) == 0:
               send(
-                  f"5:00 AM Research Brief - {today}\n\n"
-                  f"No new papers today.\n"
-                  f"All recent papers already sent this week.\n"
-                  f"Check back tomorrow!"
+                  f"6:30 AM Research Brief — {today}\n\n"
+                  f"No new papers today. All recent arXiv papers were already sent.\n"
+                  f"Check back tomorrow."
               )
               exit()
 
           send(
-              f"5:00 AM Research Brief - {today} ({weekday})\n\n"
+              f"6:30 AM Research Brief — {today} ({weekday})\n\n"
               f"Fetched {len(new_papers)} new papers from arXiv.\n"
               f"Each summary includes:\n"
-              f"  Simple explanation\n"
+              f"  Simple English explanation\n"
               f"  Real-world analogy\n"
+              f"  Technical breakdown\n"
               f"  What to learn next\n\n"
-              f"Full newsletter also coming to your email!"
+              f"Full newsletter also coming to your email."
           )
 
           papers_list_text = ""
@@ -569,10 +613,9 @@ jobs:
               )
 
           selection_prompt = (
-              "From the arXiv papers below, select the TOP 5 most impactful and "
-              "interesting for someone learning AI/ML.\n\n"
-              "Return ONLY a numbered list of exact titles. Nothing else.\n"
-              "Example:\n1. Title One\n2. Title Two\n\n"
+              f"From these arXiv papers, select the 5 most impactful and interesting "
+              f"for someone learning AI/ML.\n\n"
+              f"Return only a numbered list of exact titles. No commentary.\n\n"
               f"PAPERS:\n{papers_list_text[:5000]}"
           )
 
@@ -588,7 +631,7 @@ jobs:
                       papers_to_summarize.append(paper)
 
           if len(papers_to_summarize) == 0:
-              print("AI selection matched nothing - using top 5 newest")
+              print("Selection matched nothing — using top 5 newest")
               papers_to_summarize = new_papers[:5]
 
           email_body = build_section_header("TODAY'S TOP 5 RESEARCH PAPERS", "#1a1a2e")
@@ -597,8 +640,7 @@ jobs:
 
           for idx, paper in enumerate(papers_to_summarize):
               num = idx + 1
-              prompt = build_summary_prompt(num, total, paper, is_weekly=False)
-              summary = ask_ai(prompt)
+              summary = ask_ai(build_summary_prompt(num, total, paper, "TODAY"))
               if summary:
                   send(summary)
               else:
@@ -621,16 +663,17 @@ jobs:
               today, weekday,
               f"{weekday} Research Edition",
               f"Today Hermes fetched {len(new_papers)} new papers from arXiv. "
-              f"Each summary is written for beginners - simple explanation first, "
-              f"real-world analogy, technical details, and what to study next.",
+              f"The top {total} most impactful are summarized below — each with a "
+              f"plain English explanation, real-world analogy, technical breakdown, "
+              f"and specific topics to study next.",
               email_body
           )
-          send_email(f"The Hermes Daily - Research Brief ({today})", html)
+          send_email(f"The Hermes Daily — Research Brief ({today})", html)
 
           send(
-              f"Research brief complete! ({total} papers)\n\n"
+              f"Research brief complete. ({total} papers)\n\n"
               f"Full newsletter sent to your email.\n"
-              f"See you at 7 AM for news + challenges!"
+              f"See you at 8 AM for news and challenges."
           )
 
           print("Done!")
