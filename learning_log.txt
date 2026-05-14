@@ -1,1 +1,2 @@
 2026-05-10: Java OOPS basics
+2026-05-14: Java Interfaces
