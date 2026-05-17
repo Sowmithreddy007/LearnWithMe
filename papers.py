@@ -32,7 +32,7 @@ def save_sent(ids):
     with open(SENT_FILE, "w") as f:
         f.write("\n".join(trimmed))
 
-# ── Telegram ────────────────────────────────────────────────────────────
+# ── Telegram ───────────────────────────────────────────────────────────
 
 def send(text):
     chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
@@ -47,7 +47,7 @@ def send(text):
             print(f"Telegram error: {e}")
         time.sleep(1)
 
-# ── AI ────────────────────────────────────────────────────────────────
+# ── AI ─────────────────────────────────────────────────────────────
 
 def ask_ai(prompt):
     system = (
@@ -157,7 +157,7 @@ def fetch_arxiv(category, count=8):
         print(f"arXiv error for {category}: {e}")
     return papers
 
-# ── Prompts ────────────────────────────────────────────────────────────
+# ── Prompts ───────────────────────────────────────────────────────────
 
 def build_summary_prompt(num, total, paper, label="TODAY"):
     return (
@@ -451,4 +451,374 @@ def build_paper_card(num, total, paper, summary, is_weekly=False):
         "</td></tr></table>"
     )
 
-# (content unchanged below — only indentation fix applied)
+
+def build_section_header(label, color="#1a1a2e"):
+    return (
+        "<table role='presentation' width='100%' cellpadding='0' cellspacing='0'"
+        " style='margin:30px 0 0;'><tr>"
+        "<td style='border-bottom:3px solid " + color + ";padding-bottom:10px;'>"
+        "<span style='background:" + color + ";color:#fff;font-family:Arial,sans-serif;"
+        "font-size:9px;letter-spacing:3px;padding:6px 16px;"
+        "text-transform:uppercase;font-weight:bold;'>"
+        + label + "</span>"
+        "</td></tr></table>"
+    )
+
+
+def build_full_email(date, weekday, edition_label, intro_text, body_html):
+    return (
+        "<!DOCTYPE html><html lang='en'>"
+        "<head><meta charset='UTF-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>The Hermes Daily</title></head>"
+        "<body style='margin:0;padding:0;background:#f0ede6;font-family:Georgia,serif;'>"
+        "<table role='presentation' width='100%' cellpadding='0' cellspacing='0'"
+        " style='background:#f0ede6;'>"
+        "<tr><td align='center' style='padding:28px 12px;'>"
+        "<table role='presentation' style='max-width:680px;width:100%;background:#fff;"
+        "border:1px solid #d4c9b0;box-shadow:0 4px 16px rgba(0,0,0,0.1);'>"
+        "<tr><td style='background:#1a1a2e;height:6px;'></td></tr>"
+        "<tr><td style='background:#c9a227;height:3px;'></td></tr>"
+        "<tr><td style='background:#1a1a2e;padding:36px 48px;text-align:center;'>"
+        "<p style='color:#c9a227;font-size:9px;letter-spacing:6px;margin:0 0 12px;"
+        "font-family:Arial,sans-serif;text-transform:uppercase;font-weight:bold;'>"
+        "Your Personal Intelligence Brief</p>"
+        "<h1 style='color:#fff;font-size:48px;margin:0;letter-spacing:5px;"
+        "font-family:Georgia,serif;font-weight:normal;line-height:1;'>"
+        "THE HERMES DAILY</h1>"
+        "<p style='color:#c9a227;font-size:11px;margin:10px 0 0;"
+        "font-family:Arial,sans-serif;letter-spacing:4px;'>RESEARCH EDITION</p>"
+        "<div style='border-top:1px solid #2d2d4e;margin:16px 0 0;padding-top:14px;'>"
+        "<p style='color:#888;font-size:10px;margin:0;font-family:Arial,sans-serif;"
+        "letter-spacing:1.5px;'>"
+        + date + " &nbsp;&bull;&nbsp; " + edition_label + " &nbsp;&bull;&nbsp; HERMES AI"
+        "</p></div></td></tr>"
+        "<tr><td style='background:#c9a227;height:3px;'></td></tr>"
+        "<tr><td style='background:#2d2d4e;height:1px;'></td></tr>"
+        "<tr><td style='padding:22px 48px 0;background:#fff;'>"
+        "<table role='presentation' width='100%' cellpadding='0' cellspacing='0'"
+        " style='background:#f8f5ef;border-left:4px solid #c9a227;'>"
+        "<tr><td style='padding:14px 20px;'>"
+        "<p style='color:#555;font-size:13px;margin:0;font-family:Georgia,serif;"
+        "line-height:1.7;font-style:italic;'>" + intro_text + "</p>"
+        "</td></tr></table></td></tr>"
+        "<tr><td style='padding:0 48px 48px;background:#fff;'>" + body_html + "</td></tr>"
+        "<tr><td style='background:#e8e4d9;height:1px;'></td></tr>"
+        "<tr><td style='background:#c9a227;height:3px;'></td></tr>"
+        "<tr><td style='background:#1a1a2e;padding:24px 48px;text-align:center;'>"
+        "<p style='color:#c9a227;font-size:11px;margin:0;font-family:Arial,sans-serif;"
+        "letter-spacing:4px;font-weight:bold;'>THE HERMES DAILY</p>"
+        "<p style='color:#666;font-size:10px;margin:8px 0 0;font-family:Arial,sans-serif;'>"
+        "arXiv &bull; cs.AI &bull; cs.LG &bull; cs.CL &bull; cs.CV &bull; cs.RO"
+        "</p>"
+        "<p style='color:#444;font-size:10px;margin:6px 0 0;font-family:Arial,sans-serif;'>"
+        "Automated by GitHub Actions &bull; Summaries by OpenRouter AI"
+        "</p></td></tr>"
+        "<tr><td style='background:#c9a227;height:3px;'></td></tr>"
+        "</table></td></tr></table></body></html>"
+    )
+
+
+def send_email(subject, html_body):
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"]    = f"Hermes Research <{GMAIL_USER}>"
+        msg["To"]      = GMAIL_USER
+        msg.attach(MIMEText(html_body, "html"))
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(GMAIL_USER, GMAIL_PASS)
+            server.sendmail(GMAIL_USER, GMAIL_USER, msg.as_string())
+        print("Email sent!")
+    except Exception as e:
+        print(f"Email error: {e}")
+
+# ── Categories ──────────────────────────────────────────────────────────
+
+categories = {
+    "AI (cs.AI)":               "cs.AI",
+    "Machine Learning (cs.LG)": "cs.LG",
+    "NLP (cs.CL)":              "cs.CL",
+    "Computer Vision (cs.CV)":  "cs.CV",
+    "Robotics (cs.RO)":         "cs.RO",
+}
+
+today   = datetime.now().strftime("%d %B %Y")
+weekday = datetime.now().strftime("%A")
+
+# =============================================================================
+# WEEKEND PATH
+# =============================================================================
+
+if weekday in ["Saturday", "Sunday"]:
+
+    send(
+        f"6:30 AM Weekend Research Digest — {today}\n\n"
+        "arXiv is closed on weekends.\n"
+        "Your full WEEK IN AI RESEARCH digest is incoming.\n\n"
+        "Each paper has a plain English summary, real-world analogy, "
+        "and what to study next.\n\n"
+        "Full newsletter also coming to your email."
+    )
+
+    weekly_papers = []
+    for cat_name, cat_code in categories.items():
+        fetched = fetch_arxiv(cat_code, count=15)
+        for p in fetched:
+            p["category"] = cat_name
+        weekly_papers.extend(fetched)
+        time.sleep(2)
+
+    print(f"Weekly papers: {len(weekly_papers)}")
+
+    if len(weekly_papers) == 0:
+        send("Could not fetch weekly papers. arXiv may be down.")
+        exit()
+
+    weekly_text = ""
+    for i, p in enumerate(weekly_papers):
+        weekly_text += (
+            f"[{i+1}] {p['category']} | {p['published']}\n"
+            f"Title: {p['title']}\n"
+            f"Abstract: {p['abstract'][:300]}\n---\n"
+        )
+
+    overview = ask_ai(build_weekly_overview_prompt(len(weekly_papers), weekly_text))
+    if overview:
+        send("THIS WEEK IN AI RESEARCH\n" + "="*35 + "\n\n" + overview)
+    time.sleep(3)
+
+    selection_prompt = (
+        "From these arXiv papers, select the 5 most impactful of the week.\n\n"
+        "Return only a numbered list of exact titles. No other text.\n\n"
+        f"PAPERS:\n{weekly_text[:5000]}"
+    )
+    top_5_raw = ask_ai(selection_prompt) or ""
+
+    papers_to_summarize = []
+    if top_5_raw:
+        for paper in weekly_papers:
+            if len(papers_to_summarize) >= 5:
+                break
+            if paper["title"][:45].lower() in top_5_raw.lower():
+                papers_to_summarize.append(paper)
+
+    if len(papers_to_summarize) == 0:
+        papers_to_summarize = weekly_papers[:5]
+
+    send("TOP 5 PAPERS OF THE WEEK\n" + "="*35 + "\n\nDetailed summaries incoming...")
+
+    email_body = build_section_header("THIS WEEK IN AI RESEARCH", "#1a1a2e")
+    if overview:
+        email_body += (
+            "<div style='margin:18px 0;padding:18px 22px;"
+            "background:#f8f5ef;border-left:4px solid #1a1a2e;'>"
+            + plain_to_html(overview) + "</div>"
+        )
+    email_body += build_section_header("TOP 5 PAPERS OF THE WEEK", "#c9a227")
+
+    total = len(papers_to_summarize)
+    for idx, paper in enumerate(papers_to_summarize):
+        num = idx + 1
+        summary = ask_ai(build_summary_prompt(num, total, paper, "WEEKLY BEST"))
+        if summary:
+            send(summary)
+        else:
+            send(
+                f"PAPER {num} of {total}\n\n"
+                f"{paper['title']}\n\n"
+                f"{paper['abstract']}\n\n"
+                f"Full paper: {paper['link']}"
+            )
+        email_body += build_paper_card(num, total, paper, summary, is_weekly=True)
+        print(f"Sent paper {num}/{total}")
+        time.sleep(3)
+
+    html = build_full_email(
+        today, weekday,
+        f"{weekday} Weekend Research Digest",
+        (
+            f"arXiv publishes no new papers on weekends. This is your complete week in "
+            f"AI research — {len(weekly_papers)} papers across AI, ML, NLP, Computer Vision, "
+            "and Robotics. Every summary is written in plain English with real-world analogies "
+            "and personalised learning recommendations."
+        ),
+        email_body
+    )
+    send_email(f"The Hermes Daily — Week in AI Research ({today})", html)
+
+    send(
+        "Weekend digest complete.\n\n"
+        "Full newsletter sent to your email.\n"
+        "Enjoy your weekend. New papers resume Monday at 6:30 AM."
+    )
+    exit()
+
+# =============================================================================
+# WEEKDAY PATH
+# =============================================================================
+
+all_papers = []
+for cat_name, cat_code in categories.items():
+    fetched = fetch_arxiv(cat_code, count=8)
+    for p in fetched:
+        p["category"] = cat_name
+    all_papers.extend(fetched)
+    print(f"{cat_name}: {len(fetched)} papers")
+    time.sleep(2)
+
+print(f"Total fetched: {len(all_papers)}")
+
+sent_ids   = load_sent()
+new_papers = [p for p in all_papers if p["link"] not in sent_ids]
+print(f"New papers: {len(new_papers)}")
+
+if len(new_papers) == 0:
+    send(
+        f"6:30 AM Research Brief — {today}\n\n"
+        "No new papers today. All recent arXiv papers were already sent.\n"
+        "Check back tomorrow."
+    )
+    exit()
+
+send(
+    f"6:30 AM Research Brief — {today} ({weekday})\n\n"
+    f"Fetched {len(new_papers)} new papers from arXiv.\n"
+    "Each summary includes:\n"
+    "  Plain English explanation\n"
+    "  Real-world analogy\n"
+    "  Technical breakdown\n"
+    "  What to study next\n\n"
+    "Full newsletter also coming to your email."
+)
+
+papers_list_text = ""
+for i, p in enumerate(new_papers):
+    papers_list_text += (
+        f"[{i+1}] {p['category']}\n"
+        f"Title: {p['title']}\n"
+        f"Abstract: {p['abstract'][:250]}\n---\n"
+    )
+
+selection_prompt = (
+    "From these arXiv papers, select the 5 most impactful and interesting "
+    "for someone learning AI/ML.\n\n"
+    "Return only a numbered list of exact titles. No other text.\n\n"
+    f"PAPERS:\n{papers_list_text[:5000]}"
+)
+
+print("Selecting top 5...")
+top_5_raw = ask_ai(selection_prompt) or ""
+
+papers_to_summarize = []
+if top_5_raw:
+    for paper in new_papers:
+        if len(papers_to_summarize) >= 5:
+            break
+        if paper["title"][:45].lower() in top_5_raw.lower():
+            papers_to_summarize.append(paper)
+
+if len(papers_to_summarize) == 0:
+    print("Selection matched nothing — using top 5 newest")
+    papers_to_summarize = new_papers[:5]
+
+email_body = build_section_header("TODAY'S TOP 5 RESEARCH PAPERS", "#1a1a2e")
+sent_today = set()
+total = len(papers_to_summarize)
+
+for idx, paper in enumerate(papers_to_summarize):
+    num = idx + 1
+    print(f"Summarizing paper {num}/{total}: {paper['title'][:50]}")
+
+    # Try full detailed prompt first
+    summary = ask_ai(build_summary_prompt(num, total, paper, "TODAY"))
+
+    # If failed, retry with simpler prompt
+    if not summary:
+        print(f"  Full prompt failed — retrying with simple prompt")
+        time.sleep(3)
+        summary = ask_ai(
+            f"Summarize this research paper for a complete beginner. "
+            f"Write real content for every section. No placeholders.\n\n"
+            f"Title: {paper['title']}\n"
+            f"Abstract: {paper['abstract']}\n\n"
+            f"Write exactly these sections:\n\n"
+            f"PAPER {num} of {total} — TODAY\n"
+            f"{paper['title']}\n"
+            f"Authors: {paper['authors']}\n"
+            f"Category: {paper['category']} | Date: {paper['published']}\n\n"
+            f"IN PLAIN ENGLISH\n"
+            f"5 plain sentences for a 16-year-old with zero AI background. "
+            f"What did they build, what problem does it solve, how does it work, "
+            f"what makes it better, why should anyone care.\n\n"
+            f"REAL-WORLD ANALOGY\n"
+            f"One vivid analogy comparing this research to something from daily life.\n\n"
+            f"THE PROBLEM\n"
+            f"3 sentences on what specific gap existed before this paper.\n\n"
+            f"THEIR APPROACH\n"
+            f"4 sentences on what they built. Explain every technical term in parentheses.\n\n"
+            f"RESULTS AND NUMBERS\n"
+            f"3 sentences on what they achieved. Include numbers if mentioned.\n\n"
+            f"WHO BENEFITS\n"
+            f"3 specific groups of real people and exactly how their life improves.\n\n"
+            f"WHAT TO LEARN NEXT\n"
+            f"1. Topic name — why relevant to this paper\n"
+            f"2. Topic name — why relevant to this paper\n"
+            f"3. Topic name — why relevant to this paper\n\n"
+            f"Full paper: {paper['link']}"
+        )
+
+    if summary:
+        send(summary)
+        email_body += build_paper_card(num, total, paper, summary)
+    else:
+        # Clean manual fallback — never raw truncated abstract
+        abstract_clean = paper["abstract"]
+        if len(abstract_clean) > 500:
+            abstract_clean = abstract_clean[:500] + "..."
+
+        fallback_text = (
+            f"PAPER {num} of {total} — TODAY\n"
+            f"{'='*35}\n\n"
+            f"📌 {paper['title']}\n"
+            f"👥 {paper['authors']}\n"
+            f"🏷️ {paper['category']} | 📅 {paper['published']}\n\n"
+            f"{'─'*35}\n"
+            f"WHAT THIS PAPER IS ABOUT\n"
+            f"{'─'*35}\n\n"
+            f"{abstract_clean}\n\n"
+            f"{'─'*35}\n"
+            f"🔗 Full paper: {paper['link']}\n\n"
+            f"⚠️ AI summary unavailable for this paper.\n"
+            f"Read the abstract above for the gist."
+        )
+        send(fallback_text)
+        email_body += build_paper_card(num, total, paper, None)
+
+    sent_today.add(paper["link"])
+    print(f"  Done paper {num}/{total}")
+    time.sleep(3)
+
+save_sent(sent_today)
+
+html = build_full_email(
+    today, weekday,
+    f"{weekday} Research Edition",
+    (
+        f"Today Hermes fetched {len(new_papers)} new papers from arXiv. "
+        f"The top {total} most impactful are summarized below — each written in plain English "
+        "with a real-world analogy, full technical breakdown, and specific topics to study next."
+    ),
+    email_body
+)
+send_email(f"The Hermes Daily — Research Brief ({today})", html)
+
+send(
+    f"Research brief complete. ({total} papers)\n\n"
+    "Full newsletter sent to your email.\n"
+    "See you at 8 AM for news and coding challenges."
+)
+
+print("Done!")
