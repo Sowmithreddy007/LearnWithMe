@@ -51,14 +51,19 @@ def send(text):
 
 def ask_ai(prompt):
     system = (
-        "You are a professional science communicator writing a research digest for a complete beginner. "
-        "Rules you must follow without exception:\n"
-        "1. Output ONLY the final formatted summary. No preamble, no meta-talk, no reasoning.\n"
-        "2. Never start with phrases like 'Sure!', 'Here is', 'Let me', 'I will', 'Certainly'.\n"
-        "3. Never use placeholder text. Write real content for every single section.\n"
-        "4. Every technical term must be followed immediately by a plain English explanation in parentheses.\n"
-        "5. If a number or benchmark is not mentioned in the abstract, write: 'Specific figures not disclosed in the abstract.'\n"
-        "6. Write like a journalist at a science magazine — clear, confident, professional, beginner-friendly."
+        "You are a professional science communicator writing a research digest "
+        "for complete beginners. "
+        "You must follow these rules without exception:\n"
+        "1. Start your response directly with the content. "
+        "Never begin with 'Sure', 'Certainly', 'Here is', 'Let me', or any preamble.\n"
+        "2. Write real content for every section. "
+        "Never write placeholder text like [insert content here].\n"
+        "3. Every technical term must be explained in plain English in parentheses "
+        "immediately after it appears.\n"
+        "4. If a number is not in the abstract, write: "
+        "'Specific figures not disclosed in the abstract.'\n"
+        "5. Write like a journalist at a science magazine — "
+        "clear, confident, professional, beginner-friendly."
     )
     for model in MODELS:
         for attempt in range(2):
@@ -77,28 +82,37 @@ def ask_ai(prompt):
                         ],
                         "max_tokens": 2000
                     },
-                    timeout=90
+                    timeout=120
                 )
                 data = r.json()
                 if "choices" in data and data["choices"]:
                     content = data["choices"][0]["message"]["content"].strip()
-                    first_60 = content.lower()[:60]
-                    hard_leak_signals = [
+                    if not content:
+                        print(f"  {model} returned empty response")
+                        break
+                    # Only reject on very obvious preamble in first 50 chars
+                    first_50 = content.lower()[:50]
+                    hard_leak = [
                         "sure!", "certainly!", "of course!",
-                        "let me explain", "i will now", "i'll now",
-                        "here is the summary", "here's the summary",
+                        "here is the", "here's the",
+                        "let me write", "i will write",
                     ]
-                    if any(s in first_60 for s in hard_leak_signals):
-                        print(f"  {model} leaked reasoning — skipping")
+                    if any(s in first_50 for s in hard_leak):
+                        print(f"  {model} started with preamble — skipping")
                         break
                     print(f"  Model used: {model}")
                     return content
                 else:
-                    print(f"  {model} error: {data.get('error', {}).get('message', 'unknown')}")
+                    err = data.get("error", {}).get("message", "unknown")
+                    print(f"  {model} API error: {err}")
                     break
+            except requests.exceptions.Timeout:
+                print(f"  {model} timed out on attempt {attempt+1}")
+                time.sleep(5)
             except Exception as e:
-                print(f"  Attempt {attempt+1} failed: {e}")
+                print(f"  {model} attempt {attempt+1} failed: {e}")
                 time.sleep(3)
+    print("  All models failed for this prompt")
     return None
 
 # ── arXiv fetcher ─────────────────────────────────────────────────────────────
@@ -711,63 +725,77 @@ sent_today = set()
 total = len(papers_to_summarize)
 
 for idx, paper in enumerate(papers_to_summarize):
-    num = idx + 1
-    summary = ask_ai(build_summary_prompt(num, total, paper, "TODAY"))
-    if summary:
-        send(summary)
-    else:
-        # AI failed — retry once with a simpler prompt before giving up
-        print(f"  Summary failed for paper {num} — retrying with simpler prompt")
-        simple_prompt = (
-            f"Summarize this AI research paper for a beginner in exactly these sections. "
-            f"Write real content for every section, no placeholders:\n\n"
-            f"Title: {paper['title']}\n"
-            f"Abstract: {paper['abstract']}\n\n"
-            f"PAPER {num} of {total} — TODAY\n"
-            f"{paper['title']}\n"
-            f"Authors: {paper['authors']}\n"
-            f"Category: {paper['category']} | Date: {paper['published']}\n\n"
-            f"IN PLAIN ENGLISH\n"
-            f"[5 plain sentences for a 16-year-old with no AI background]\n\n"
-            f"REAL-WORLD ANALOGY\n"
-            f"[One vivid analogy comparing this to daily life]\n\n"
-            f"THE PROBLEM\n"
-            f"[2-3 sentences on what gap this fills]\n\n"
-            f"THEIR APPROACH\n"
-            f"[3-4 sentences on what they built, with jargon explained]\n\n"
-            f"RESULTS AND NUMBERS\n"
-            f"[2-3 sentences on what they achieved]\n\n"
-            f"WHO BENEFITS\n"
-            f"[3 specific groups and how they benefit]\n\n"
-            f"WHAT TO LEARN NEXT\n"
-            f"1. Topic — why relevant\n"
-            f"2. Topic — why relevant\n"
-            f"3. Topic — why relevant\n\n"
-            f"Full paper: {paper['link']}"
-        )
-        retry_summary = ask_ai(simple_prompt)
-        if retry_summary:
-            send(retry_summary)
-            email_body += build_paper_card(num, total, paper, retry_summary)
-        else:
-            # Final fallback — clean manual format, never raw abstract
-            send(
-                f"PAPER {num} of {total} — TODAY\n"
-                f"{'='*35}\n\n"
-                f"📌 {paper['title']}\n"
-                f"👥 {paper['authors']}\n"
-                f"🏷️ {paper['category']} | 📅 {paper['published']}\n\n"
-                f"{'─'*35}\n"
-                f"ABSTRACT\n"
-                f"{'─'*35}\n"
-                f"{paper['abstract'][:600]}{'...' if len(paper['abstract']) > 600 else ''}\n\n"
-                f"🔗 Full paper: {paper['link']}\n\n"
-                f"⚠️ AI summary unavailable for this paper today."
-            )
-            email_body += build_paper_card(num, total, paper, None)
-        sent_today.add(paper["link"])
-        print(f"  Fallback sent for paper {num}")
-        time.sleep(3)
+      num = idx + 1
+      print(f"Summarizing paper {num}/{total}: {paper['title'][:50]}")
+
+      # Try full detailed prompt first
+      summary = ask_ai(build_summary_prompt(num, total, paper, "TODAY"))
+
+      # If failed, retry with simpler prompt
+      if not summary:
+          print(f"  Full prompt failed — retrying with simple prompt")
+          time.sleep(3)
+          summary = ask_ai(
+              f"Summarize this research paper for a complete beginner. "
+              f"Write real content for every section. No placeholders.\n\n"
+              f"Title: {paper['title']}\n"
+              f"Abstract: {paper['abstract']}\n\n"
+              f"Write exactly these sections:\n\n"
+              f"PAPER {num} of {total} — TODAY\n"
+              f"{paper['title']}\n"
+              f"Authors: {paper['authors']}\n"
+              f"Category: {paper['category']} | Date: {paper['published']}\n\n"
+              f"IN PLAIN ENGLISH\n"
+              f"5 plain sentences for a 16-year-old with zero AI background. "
+              f"What did they build, what problem does it solve, how does it work, "
+              f"what makes it better, why should anyone care.\n\n"
+              f"REAL-WORLD ANALOGY\n"
+              f"One vivid analogy comparing this research to something from daily life.\n\n"
+              f"THE PROBLEM\n"
+              f"3 sentences on what specific gap existed before this paper.\n\n"
+              f"THEIR APPROACH\n"
+              f"4 sentences on what they built. Explain every technical term in parentheses.\n\n"
+              f"RESULTS AND NUMBERS\n"
+              f"3 sentences on what they achieved. Include numbers if mentioned.\n\n"
+              f"WHO BENEFITS\n"
+              f"3 specific groups of real people and exactly how their life improves.\n\n"
+              f"WHAT TO LEARN NEXT\n"
+              f"1. Topic name — why relevant to this paper\n"
+              f"2. Topic name — why relevant to this paper\n"
+              f"3. Topic name — why relevant to this paper\n\n"
+              f"Full paper: {paper['link']}"
+          )
+
+      if summary:
+          send(summary)
+          email_body += build_paper_card(num, total, paper, summary)
+      else:
+          # Clean manual fallback — never raw truncated abstract
+          abstract_clean = paper["abstract"]
+          if len(abstract_clean) > 500:
+              abstract_clean = abstract_clean[:500] + "..."
+
+          fallback_text = (
+              f"PAPER {num} of {total} — TODAY\n"
+              f"{'='*35}\n\n"
+              f"📌 {paper['title']}\n"
+              f"👥 {paper['authors']}\n"
+              f"🏷️ {paper['category']} | 📅 {paper['published']}\n\n"
+              f"{'─'*35}\n"
+              f"WHAT THIS PAPER IS ABOUT\n"
+              f"{'─'*35}\n\n"
+              f"{abstract_clean}\n\n"
+              f"{'─'*35}\n"
+              f"🔗 Full paper: {paper['link']}\n\n"
+              f"⚠️ AI summary unavailable for this paper.\n"
+              f"Read the abstract above for the gist."
+          )
+          send(fallback_text)
+          email_body += build_paper_card(num, total, paper, None)
+
+      sent_today.add(paper["link"])
+      print(f"  Done paper {num}/{total}")
+      time.sleep(3)
         continue
     email_body += build_paper_card(num, total, paper, summary)
     sent_today.add(paper["link"])
