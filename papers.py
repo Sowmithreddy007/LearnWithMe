@@ -250,66 +250,159 @@ def build_weekly_overview_prompt(num_papers, weekly_text):
 def plain_to_html(text):
     if not text:
         return "<p style='color:#999;font-family:Arial,sans-serif;'>Content unavailable.</p>"
+
+    # Section config: marker text -> (background color, text color, emoji)
+    SECTION_STYLES = {
+        "IN PLAIN ENGLISH":    ("#1a1a2e", "#f0c040", "💡"),
+        "REAL-WORLD ANALOGY":  ("#1a4a2e", "#80ffb0", "🔁"),
+        "WHAT TO LEARN NEXT":  ("#2e1a4a", "#c9b0ff", "📚"),
+    }
+    SUBSECTION_MARKERS = {
+        "THE PROBLEM":         "#e74c3c",
+        "THEIR APPROACH":      "#2980b9",
+        "RESULTS AND NUMBERS": "#27ae60",
+        "WHO BENEFITS":        "#e67e22",
+    }
+
     lines = text.split("\n")
     parts = []
+
     for line in lines:
         s = line.strip()
         if not s:
-            parts.append("<div style='height:5px;'></div>")
-        elif s.startswith("Full paper:"):
+            parts.append("<div style='height:6px;'></div>")
+            continue
+
+        # Full paper link
+        if s.startswith("Full paper:"):
             link = s.replace("Full paper:", "").strip()
             parts.append(
-                "<p style='margin:20px 0 0;'>"
+                "<div style='margin:22px 0 0;padding-top:16px;"
+                "border-top:1px solid #e8e4d9;'>"
                 "<a href='" + link + "' "
                 "style='display:inline-block;background:#1a1a2e;color:#c9a227;"
                 "font-family:Arial,sans-serif;font-size:9px;font-weight:bold;"
-                "letter-spacing:2px;padding:9px 20px;text-decoration:none;"
-                "text-transform:uppercase;'>READ FULL PAPER &rarr;</a></p>"
-            )
-        elif s.startswith("--- ") and s.endswith(" ---"):
-            label = s.replace("--- ", "").replace(" ---", "").strip()
-            parts.append(
-                "<div style='margin:22px 0 10px;'>"
-                "<span style='display:inline-block;background:#1a1a2e;color:#c9a227;"
-                "font-family:Arial,sans-serif;font-size:9px;font-weight:bold;"
-                "letter-spacing:2.5px;padding:5px 14px;text-transform:uppercase;'>"
-                + label + "</span>"
-                "<div style='border-bottom:1px solid #e8e4d9;margin-top:-1px;'></div>"
+                "letter-spacing:2px;padding:10px 22px;text-decoration:none;"
+                "text-transform:uppercase;'>READ FULL PAPER &rarr;</a>"
                 "</div>"
             )
-        elif s.startswith("PAPER ") and " of " in s:
+            continue
+
+        # Paper badge line
+        if s.startswith("PAPER ") and " of " in s and "—" in s:
             parts.append(
-                "<div style='display:inline-block;background:#c9a227;color:#1a1a2e;"
+                "<div style='margin-bottom:16px;'>"
+                "<span style='display:inline-block;background:#c9a227;color:#1a1a2e;"
                 "font-family:Arial,sans-serif;font-size:8px;font-weight:bold;"
-                "letter-spacing:2.5px;padding:5px 12px;margin-bottom:12px;"
-                "text-transform:uppercase;'>" + s + "</div>"
+                "letter-spacing:3px;padding:6px 14px;text-transform:uppercase;'>"
+                + s + "</span></div>"
             )
-        elif s.isupper() and 2 < len(s) < 60 and not s.startswith("PAPER "):
+            continue
+
+        # Paper title (line after badge — long line, not metadata)
+        if (not s.startswith("Authors:") and not s.startswith("Category:")
+                and not s.startswith("Full paper:")
+                and len(s) > 30 and s == s and not s.isupper()
+                and not any(s.startswith(k) for k in SECTION_STYLES)
+                and not any(s.startswith(k) for k in SUBSECTION_MARKERS)
+                and not s[0].isdigit()):
+            # Could be title — check if previous part had badge
+            last = "".join(parts[-2:]) if len(parts) >= 2 else ""
+            if "c9a227" in last and "PAPER" in last:
+                parts.append(
+                    "<h2 style='color:#1a1a2e;font-size:18px;margin:0 0 6px;"
+                    "font-family:Georgia,serif;line-height:1.4;font-weight:bold;'>"
+                    + s + "</h2>"
+                )
+                continue
+
+        # Authors / Category metadata
+        if s.startswith("Authors:") or s.startswith("Category:"):
             parts.append(
-                "<p style='font-family:Arial,sans-serif;font-size:9px;font-weight:bold;"
-                "color:#1a1a2e;letter-spacing:2px;margin:16px 0 5px;"
-                "text-transform:uppercase;border-bottom:1px solid #e8e4d9;"
-                "padding-bottom:4px;'>" + s + "</p>"
+                "<p style='color:#999;font-size:11px;margin:2px 0 0;"
+                "font-family:Arial,sans-serif;border-bottom:1px solid #f0ede6;"
+                "padding-bottom:10px;margin-bottom:4px;'>" + s + "</p>"
             )
-        elif s.startswith("Authors:") or s.startswith("Category:"):
+            continue
+
+        # Major section headers (colored banner)
+        matched_section = None
+        for key, (bg, fg, emoji) in SECTION_STYLES.items():
+            if s.upper() == key:
+                matched_section = (bg, fg, emoji, key)
+                break
+
+        if matched_section:
+            bg, fg, emoji, key = matched_section
             parts.append(
-                "<p style='color:#999;font-size:11px;margin:2px 0;"
-                "font-family:Arial,sans-serif;'>" + s + "</p>"
+                "<div style='margin:24px 0 12px;'>"
+                "<table role='presentation' width='100%' cellpadding='0' cellspacing='0'>"
+                "<tr>"
+                "<td style='background:" + bg + ";padding:9px 16px;'>"
+                "<span style='color:" + fg + ";font-family:Arial,sans-serif;"
+                "font-size:10px;font-weight:bold;letter-spacing:2px;"
+                "text-transform:uppercase;'>"
+                + emoji + " " + key +
+                "</span>"
+                "</td>"
+                "<td style='background:" + bg + ";opacity:0.3;width:100%;'></td>"
+                "</tr></table>"
+                "</div>"
             )
-        elif len(s) > 2 and s[0].isdigit() and s[1] == ".":
+            continue
+
+        # Sub-section markers (colored left border)
+        matched_sub = None
+        for key, color in SUBSECTION_MARKERS.items():
+            if s.upper() == key:
+                matched_sub = (key, color)
+                break
+
+        if matched_sub:
+            key, color = matched_sub
             parts.append(
-                "<div style='display:flex;align-items:flex-start;margin:8px 0;'>"
-                "<span style='background:#1a1a2e;color:#c9a227;font-family:Arial,sans-serif;"
-                "font-size:11px;font-weight:bold;padding:2px 8px;margin-right:10px;"
-                "margin-top:2px;flex-shrink:0;'>" + s[0] + "</span>"
+                "<div style='margin:18px 0 8px;border-left:4px solid " + color + ";"
+                "padding:6px 12px;background:#fafaf8;'>"
+                "<span style='font-family:Arial,sans-serif;font-size:9px;"
+                "font-weight:bold;color:" + color + ";letter-spacing:2px;"
+                "text-transform:uppercase;'>&#9670; " + key + "</span>"
+                "</div>"
+            )
+            continue
+
+        # Numbered learning items
+        if len(s) > 2 and s[0].isdigit() and s[1] == ".":
+            emoji_map = {"1": "1️⃣", "2": "2️⃣", "3": "3️⃣"}
+            num_emoji = emoji_map.get(s[0], s[0])
+            parts.append(
+                "<div style='display:flex;align-items:flex-start;margin:10px 0;"
+                "padding:10px 14px;background:#f8f5ef;border-left:3px solid #c9a227;'>"
+                "<span style='font-size:16px;margin-right:10px;flex-shrink:0;'>"
+                + s[0] + "</span>"
+                "<span style='color:#333;font-size:13px;line-height:1.7;"
+                "font-family:Georgia,serif;'>" + s[3:] + "</span>"
+                "</div>"
+            )
+            continue
+
+        # Bullet points
+        if s.startswith("- ") or s.startswith("* "):
+            parts.append(
+                "<div style='display:flex;align-items:flex-start;margin:6px 0;'>"
+                "<span style='color:#c9a227;margin-right:10px;font-size:16px;"
+                "line-height:1.4;flex-shrink:0;'>&#8226;</span>"
                 "<span style='color:#333;font-size:13px;line-height:1.75;"
-                "font-family:Georgia,serif;'>" + s[3:] + "</span></div>"
+                "font-family:Georgia,serif;'>" + s[2:] + "</span>"
+                "</div>"
             )
-        else:
-            parts.append(
-                "<p style='margin:5px 0;line-height:1.8;color:#333;"
-                "font-size:13px;font-family:Georgia,serif;'>" + s + "</p>"
-            )
+            continue
+
+        # Default paragraph
+        parts.append(
+            "<p style='margin:5px 0;line-height:1.85;color:#333;"
+            "font-size:13px;font-family:Georgia,serif;'>" + s + "</p>"
+        )
+
     return "\n".join(parts)
 
 
