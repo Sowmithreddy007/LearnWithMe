@@ -82,13 +82,13 @@ def ask_ai(prompt):
                 data = r.json()
                 if "choices" in data and data["choices"]:
                     content = data["choices"][0]["message"]["content"].strip()
-                    leak_signals = [
-                        "let me ", "i will ", "i'll ", "here is ",
-                        "sure!", "certainly!", "okay,", "the instruction",
-                        "i need to", "we need to", "the user wants",
-                        "i should ", "now i ", "first,"
+                    first_60 = content.lower()[:60]
+                    hard_leak_signals = [
+                        "sure!", "certainly!", "of course!",
+                        "let me explain", "i will now", "i'll now",
+                        "here is the summary", "here's the summary",
                     ]
-                    if any(s in content.lower()[:200] for s in leak_signals):
+                    if any(s in first_60 for s in hard_leak_signals):
                         print(f"  {model} leaked reasoning — skipping")
                         break
                     print(f"  Model used: {model}")
@@ -716,14 +716,59 @@ for idx, paper in enumerate(papers_to_summarize):
     if summary:
         send(summary)
     else:
-        send(
-            f"PAPER {num} of {total}\n\n"
+        # AI failed — retry once with a simpler prompt before giving up
+        print(f"  Summary failed for paper {num} — retrying with simpler prompt")
+        simple_prompt = (
+            f"Summarize this AI research paper for a beginner in exactly these sections. "
+            f"Write real content for every section, no placeholders:\n\n"
+            f"Title: {paper['title']}\n"
+            f"Abstract: {paper['abstract']}\n\n"
+            f"PAPER {num} of {total} — TODAY\n"
             f"{paper['title']}\n"
             f"Authors: {paper['authors']}\n"
-            f"Category: {paper['category']} | {paper['published']}\n\n"
-            f"{paper['abstract']}\n\n"
+            f"Category: {paper['category']} | Date: {paper['published']}\n\n"
+            f"IN PLAIN ENGLISH\n"
+            f"[5 plain sentences for a 16-year-old with no AI background]\n\n"
+            f"REAL-WORLD ANALOGY\n"
+            f"[One vivid analogy comparing this to daily life]\n\n"
+            f"THE PROBLEM\n"
+            f"[2-3 sentences on what gap this fills]\n\n"
+            f"THEIR APPROACH\n"
+            f"[3-4 sentences on what they built, with jargon explained]\n\n"
+            f"RESULTS AND NUMBERS\n"
+            f"[2-3 sentences on what they achieved]\n\n"
+            f"WHO BENEFITS\n"
+            f"[3 specific groups and how they benefit]\n\n"
+            f"WHAT TO LEARN NEXT\n"
+            f"1. Topic — why relevant\n"
+            f"2. Topic — why relevant\n"
+            f"3. Topic — why relevant\n\n"
             f"Full paper: {paper['link']}"
         )
+        retry_summary = ask_ai(simple_prompt)
+        if retry_summary:
+            send(retry_summary)
+            email_body += build_paper_card(num, total, paper, retry_summary)
+        else:
+            # Final fallback — clean manual format, never raw abstract
+            send(
+                f"PAPER {num} of {total} — TODAY\n"
+                f"{'='*35}\n\n"
+                f"📌 {paper['title']}\n"
+                f"👥 {paper['authors']}\n"
+                f"🏷️ {paper['category']} | 📅 {paper['published']}\n\n"
+                f"{'─'*35}\n"
+                f"ABSTRACT\n"
+                f"{'─'*35}\n"
+                f"{paper['abstract'][:600]}{'...' if len(paper['abstract']) > 600 else ''}\n\n"
+                f"🔗 Full paper: {paper['link']}\n\n"
+                f"⚠️ AI summary unavailable for this paper today."
+            )
+            email_body += build_paper_card(num, total, paper, None)
+        sent_today.add(paper["link"])
+        print(f"  Fallback sent for paper {num}")
+        time.sleep(3)
+        continue
     email_body += build_paper_card(num, total, paper, summary)
     sent_today.add(paper["link"])
     print(f"Sent paper {num}/{total}")
